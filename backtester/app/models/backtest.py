@@ -33,3 +33,14 @@ class PhaseResult(BaseModel):
     trades: list[Trade] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+
+
+class BacktestSummary(BaseModel):
+    id: Optional[int] = None
+    strategy_name: str
+    composite_score: float
+    backtest_win_rate: float
+    forward_win_rate: Optional[float] = None
+    total_trades: int
+    symbols_tested: str
+    ran_at: datetime

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from backtester.app.core.state import BacktesterState
+from backtester.app.data.results_store import get_recent_results
 
 app = FastAPI(
     title="NovaFX Backtester",
@@ -40,4 +41,13 @@ async def health():
         "uptime_seconds": state.uptime_seconds(),
         "last_backtest_cycle": state.last_cycle_time.isoformat() if state.last_cycle_time else None,
         "scheduler_next_run": next_run.isoformat() if next_run else None,
+    }
+
+
+@app.get("/history")
+async def history(limit: int = 10):
+    results = get_recent_results(min(limit, 100))
+    return {
+        "count": len(results),
+        "results": [r.model_dump() for r in results],
     }
