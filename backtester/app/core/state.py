@@ -1,4 +1,4 @@
-"""Singleton state tracker for the bot — stores last signal and scheduler ref."""
+"""Singleton state tracker for the backtester service."""
 
 from __future__ import annotations
 
@@ -8,23 +8,18 @@ from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.models.signals import IncomingSignal
-
 _start_time = time.monotonic()
 
 
-class BotState:
-    _instance: Optional[BotState] = None
+class BacktesterState:
+    _instance: Optional[BacktesterState] = None
 
     def __init__(self) -> None:
-        self.last_signal: Optional[IncomingSignal] = None
-        self.last_signal_time: Optional[datetime] = None
-        self.active_strategy: Optional[str] = None
         self.scheduler: Optional[AsyncIOScheduler] = None
-        self.last_fetch_times: dict[str, datetime] = {}
+        self.last_cycle_time: Optional[datetime] = None
 
     @classmethod
-    def get(cls) -> BotState:
+    def get(cls) -> BacktesterState:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -33,19 +28,13 @@ class BotState:
     def reset(cls) -> None:
         cls._instance = None
 
-    def record_signal(self, signal: IncomingSignal) -> None:
-        self.last_signal = signal
-        self.last_signal_time = datetime.now(timezone.utc)
-        if signal.indicator:
-            self.active_strategy = signal.indicator
-
-    def record_fetch(self, symbol: str) -> None:
-        self.last_fetch_times[symbol] = datetime.now(timezone.utc)
+    def record_cycle(self) -> None:
+        self.last_cycle_time = datetime.now(timezone.utc)
 
     def get_next_run_time(self) -> Optional[datetime]:
         if self.scheduler is None:
             return None
-        job = self.scheduler.get_job("signal_engine")
+        job = self.scheduler.get_job("backtest_cycle")
         if job is None:
             return None
         return job.next_run_time

@@ -219,6 +219,8 @@ async def fetch_ohlcv(
 
     cached = _get_cached(key)
     if cached is not None:
+        from app.services.bot_state import BotState
+        BotState.get().record_fetch(symbol)
         return cached
 
     last_exc = None
@@ -229,6 +231,8 @@ async def fetch_ohlcv(
                 if df is not None and not df.empty:
                     _set_cached(key, df)
                     logger.info("Fetched %d bars for %s (attempt %d)", len(df), symbol, attempt)
+                    from app.services.bot_state import BotState
+                    BotState.get().record_fetch(symbol)
                     return df
                 logger.warning("Empty response for %s (attempt %d/%d)", symbol, attempt, MAX_RETRIES)
             except httpx.HTTPStatusError as exc:

@@ -1,4 +1,7 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from backtester.app.core.state import BacktesterState
 
 app = FastAPI(
     title="NovaFX Backtester",
@@ -18,4 +21,23 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    state = BacktesterState.get()
+
+    if not state.scheduler_running():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "reason": "scheduler not running",
+                "service": "NovaFX Backtester",
+            },
+        )
+
+    next_run = state.get_next_run_time()
+    return {
+        "status": "healthy",
+        "service": "NovaFX Backtester",
+        "uptime_seconds": state.uptime_seconds(),
+        "last_backtest_cycle": state.last_cycle_time.isoformat() if state.last_cycle_time else None,
+        "scheduler_next_run": next_run.isoformat() if next_run else None,
+    }

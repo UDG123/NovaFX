@@ -24,8 +24,8 @@ def format_signal_message(signal: ProcessedSignal) -> str:
         f"<b>Size</b> {signal.position_size}  |  "
         f"<b>Risk</b> ${signal.risk_amount}\n\n"
         f"<i>Source: {signal.source}</i>"
-        f"{f'  \u2022  <i>{signal.indicator}</i>' if signal.indicator else ''}\n"
-        f"<i>{signal.timestamp.strftime('%Y-%m-%d %H:%M UTC')}</i>"
+        + (f"  \u2022  <i>{signal.indicator}</i>" if signal.indicator else "")
+        + f"\n<i>{signal.timestamp.strftime('%Y-%m-%d %H:%M UTC')}</i>"
     )
 
 
