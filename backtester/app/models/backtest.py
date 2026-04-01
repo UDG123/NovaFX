@@ -29,6 +29,7 @@ class PhaseResult(BaseModel):
     total_commission_pct: float = 0.0
     net_pnl_pct: float = 0.0
     max_drawdown_pct: float = 0.0
+    mtf_filtered: int = 0
     trades: list[Trade] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None

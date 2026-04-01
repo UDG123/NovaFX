@@ -1,11 +1,15 @@
-"""Tests for backtest engine: win/loss counting, commission, PnL, drawdown."""
+"""Tests for backtest engine: win/loss counting, commission, PnL, drawdown, MTF."""
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from backtester.app.core.backtest_engine import (
     COMMISSION_RATES,
     detect_market,
+    filter_signals_by_mtf,
     get_commission_rate,
+    get_htf_bias,
     run_backtest,
 )
 
@@ -145,3 +149,140 @@ class TestRunBacktest:
         result = run_backtest(backtest_df, signals, "EURUSD", "test_strat")
 
         assert result.max_drawdown_pct > 0
+
+
+# ── HTF helper fixtures ──────────────────────────────────────────────────────
+
+
+def _make_htf_df(prices: list[float]) -> pd.DataFrame:
+    closes = np.array(prices, dtype=float)
+    opens = np.roll(closes, 1)
+    opens[0] = closes[0]
+    return pd.DataFrame({
+        "open": opens,
+        "high": np.maximum(opens, closes) * 1.002,
+        "low": np.minimum(opens, closes) * 0.998,
+        "close": closes,
+        "volume": [100] * len(closes),
+    })
+
+
+# ── Multi-Timeframe bias ─────────────────────────────────────────────────────
+
+
+class TestGetHtfBias:
+    def test_bullish_bias(self):
+        # Uptrend: EMA9 > EMA21
+        prices = [100.0 + i * 0.3 for i in range(30)]
+        assert get_htf_bias(_make_htf_df(prices)) == "BUY"
+
+    def test_bearish_bias(self):
+        # Downtrend: EMA9 < EMA21
+        prices = [100.0 - i * 0.3 for i in range(30)]
+        assert get_htf_bias(_make_htf_df(prices)) == "SELL"
+
+    def test_insufficient_data_returns_none(self):
+        assert get_htf_bias(_make_htf_df([100.0] * 10)) is None
+
+    def test_none_dataframe_returns_none(self):
+        assert get_htf_bias(None) is None
+
+
+class TestFilterSignalsByMtf:
+    def test_bullish_bias_keeps_buys(self):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 2, "exit_idx": 7},
+            {"action": "BUY", "entry_idx": 3, "exit_idx": 8},
+        ]
+        kept, removed = filter_signals_by_mtf(signals, "BUY")
+        assert len(kept) == 2
+        assert all(s["action"] == "BUY" for s in kept)
+        assert removed == 1
+
+    def test_bearish_bias_keeps_sells(self):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 2, "exit_idx": 7},
+        ]
+        kept, removed = filter_signals_by_mtf(signals, "SELL")
+        assert len(kept) == 1
+        assert kept[0]["action"] == "SELL"
+        assert removed == 1
+
+    def test_none_bias_passes_all(self):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 2, "exit_idx": 7},
+        ]
+        kept, removed = filter_signals_by_mtf(signals, None)
+        assert len(kept) == 2
+        assert removed == 0
+
+    def test_empty_signals(self):
+        kept, removed = filter_signals_by_mtf([], "BUY")
+        assert kept == []
+        assert removed == 0
+
+
+class TestRunBacktestMTF:
+    def test_mtf_filters_counter_trend_trades(self, backtest_df):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 5, "exit_idx": 4},
+        ]
+        # Bullish HTF: only BUY should survive
+        htf = _make_htf_df([100.0 + i * 0.3 for i in range(30)])
+        result = run_backtest(backtest_df, signals, "EURUSD", "test", df_htf=htf)
+
+        assert result.total_trades == 1
+        assert result.trades[0].action == "BUY"
+        assert result.mtf_filtered == 1
+
+    def test_mtf_filtered_field_in_result(self, backtest_df):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 2, "exit_idx": 4},
+            {"action": "SELL", "entry_idx": 4, "exit_idx": 9},
+        ]
+        # Bullish HTF: 2 SELLs should be removed
+        htf = _make_htf_df([100.0 + i * 0.3 for i in range(30)])
+        result = run_backtest(backtest_df, signals, "EURUSD", "test", df_htf=htf)
+
+        assert result.mtf_filtered == 2
+        assert result.total_trades == 1
+
+    def test_no_htf_means_no_filtering(self, backtest_df):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 5, "exit_idx": 4},
+        ]
+        result = run_backtest(backtest_df, signals, "EURUSD", "test")
+        assert result.total_trades == 2
+        assert result.mtf_filtered == 0
+
+    def test_insufficient_htf_data_passes_all(self, backtest_df):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 5, "exit_idx": 4},
+        ]
+        short_htf = _make_htf_df([100.0] * 5)
+        result = run_backtest(backtest_df, signals, "EURUSD", "test", df_htf=short_htf)
+        assert result.total_trades == 2
+        assert result.mtf_filtered == 0
+
+    def test_bearish_htf_removes_buys(self, backtest_df):
+        signals = [
+            {"action": "BUY", "entry_idx": 0, "exit_idx": 5},
+            {"action": "SELL", "entry_idx": 5, "exit_idx": 4},
+        ]
+        htf = _make_htf_df([100.0 - i * 0.3 for i in range(30)])
+        result = run_backtest(backtest_df, signals, "EURUSD", "test", df_htf=htf)
+
+        assert result.total_trades == 1
+        assert result.trades[0].action == "SELL"
+        assert result.mtf_filtered == 1
+
+    def test_mtf_default_zero_without_htf(self, backtest_df):
+        result = run_backtest(backtest_df, [], "EURUSD", "test")
+        assert result.mtf_filtered == 0

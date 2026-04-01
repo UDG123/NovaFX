@@ -1,17 +1,16 @@
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
+import numpy as np
 import pandas as pd
+from ta.trend import EMAIndicator
 
 from backtester.app.models.backtest import PhaseResult, Trade
 
 logger = logging.getLogger(__name__)
 
 # Commission per trade (entry + exit combined)
-# Forex: fixed 0.0002 (≈2 pips spread cost as a ratio of price)
-# Crypto: 0.1% = 0.001
-# Indices: 0.05% = 0.0005
-# Commodities: falls back to forex rate
 COMMISSION_RATES = {
     "forex": 0.0002,
     "crypto": 0.001,
@@ -48,12 +47,60 @@ def get_commission_rate(symbol: str) -> float:
     return COMMISSION_RATES.get(market, COMMISSION_RATES["forex"])
 
 
+# ── Multi-Timeframe confirmation ──────────────────────────────────────────────
+
+
+def get_htf_bias(df_htf: pd.DataFrame) -> Optional[str]:
+    """Determine higher-timeframe trend bias using EMA 9/21 on 4h candles.
+
+    Returns "BUY" if EMA9 > EMA21 (bullish), "SELL" if EMA9 < EMA21 (bearish),
+    or None if insufficient data or EMAs are equal.
+    """
+    if df_htf is None or len(df_htf) < 21:
+        return None
+
+    ema9 = EMAIndicator(close=df_htf["close"], window=9).ema_indicator()
+    ema21 = EMAIndicator(close=df_htf["close"], window=21).ema_indicator()
+
+    fast = ema9.iloc[-1]
+    slow = ema21.iloc[-1]
+
+    if np.isnan(fast) or np.isnan(slow):
+        return None
+
+    if fast > slow:
+        return "BUY"
+    elif fast < slow:
+        return "SELL"
+    return None
+
+
+def filter_signals_by_mtf(
+    signals: list[dict], htf_bias: Optional[str],
+) -> tuple[list[dict], int]:
+    """Filter signals to only those agreeing with the higher-timeframe bias.
+
+    Returns (filtered_signals, number_of_signals_removed).
+    If htf_bias is None (no data / inconclusive), all signals pass through.
+    """
+    if htf_bias is None:
+        return signals, 0
+
+    kept = [s for s in signals if s["action"] == htf_bias]
+    removed = len(signals) - len(kept)
+    return kept, removed
+
+
+# ── Backtest engine ───────────────────────────────────────────────────────────
+
+
 def run_backtest(
     df: pd.DataFrame,
     signals: list[dict],
     symbol: str,
     strategy: str,
     phase: str = "backtest",
+    df_htf: Optional[pd.DataFrame] = None,
 ) -> PhaseResult:
     """Run a backtest over OHLCV data with a list of entry/exit signals.
 
@@ -61,7 +108,21 @@ def run_backtest(
         action: "BUY" or "SELL"
         entry_idx: int  — row index for entry
         exit_idx: int   — row index for exit
+
+    If df_htf (4h candles) is provided, signals are filtered by
+    higher-timeframe EMA 9/21 trend alignment before execution.
     """
+    # Multi-timeframe filter
+    mtf_filtered = 0
+    if df_htf is not None:
+        htf_bias = get_htf_bias(df_htf)
+        signals, mtf_filtered = filter_signals_by_mtf(signals, htf_bias)
+        if mtf_filtered:
+            logger.info(
+                "MTF filter: %s bias on %s, removed %d counter-trend signals",
+                htf_bias, symbol, mtf_filtered,
+            )
+
     commission_rate = get_commission_rate(symbol)
     trades: list[Trade] = []
     equity_curve: list[float] = [0.0]
@@ -82,8 +143,6 @@ def run_backtest(
         else:
             raw_pnl_pct = (entry_price - exit_price) / entry_price
 
-        # Commission expressed as % of entry price, deducted from pnl
-        # For forex this is a fixed ratio (0.0002); for others it's a percentage
         commission_pct = commission_rate
         net_pnl_pct = raw_pnl_pct - commission_pct
 
@@ -124,6 +183,7 @@ def run_backtest(
         total_commission_pct=round(total_commission, 4),
         net_pnl_pct=round(net_pnl, 4),
         max_drawdown_pct=round(max_dd * 100, 4),
+        mtf_filtered=mtf_filtered,
         trades=trades,
         started_at=trades[0].entry_time if trades else None,
         ended_at=trades[-1].exit_time if trades else None,
