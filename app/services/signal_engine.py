@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
+from ta.volatility import BollingerBands
 
 from app.data.fetcher import fetch_ohlcv
 from app.models.signals import IncomingSignal
@@ -98,7 +99,35 @@ def strategy_macd_cross(df: pd.DataFrame, symbol: str) -> Optional[IncomingSigna
     )
 
 
-STRATEGIES = [strategy_ema_cross, strategy_rsi_extreme, strategy_macd_cross]
+def strategy_bollinger_reversion(df: pd.DataFrame, symbol: str) -> Optional[IncomingSignal]:
+    if len(df) < 20:
+        return None
+    bb = BollingerBands(close=df["close"], window=20, window_dev=2)
+    upper = bb.bollinger_hband().iloc[-1]
+    lower = bb.bollinger_lband().iloc[-1]
+    close = float(df["close"].iloc[-1])
+
+    if np.isnan(upper) or np.isnan(lower):
+        return None
+
+    if close <= lower:
+        action = "BUY"
+    elif close >= upper:
+        action = "SELL"
+    else:
+        return None
+
+    return IncomingSignal(
+        symbol=symbol,
+        action=action,
+        price=close,
+        timeframe="15m",
+        source="signal_engine",
+        indicator=f"BB Reversion (L={lower:.5g} U={upper:.5g})",
+    )
+
+
+STRATEGIES = [strategy_ema_cross, strategy_rsi_extreme, strategy_macd_cross, strategy_bollinger_reversion]
 
 MIN_CONFLUENCE = 2
 
