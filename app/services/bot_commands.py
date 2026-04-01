@@ -83,17 +83,23 @@ async def poll_telegram_commands() -> None:
                 text = message.get("text", "")
                 chat_id = message.get("chat", {}).get("id")
 
-                if text.strip().startswith("/status") and chat_id:
-                    reply = _format_status_message()
-                    await client.post(
-                        f"{base}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": reply,
-                            "parse_mode": "HTML",
-                        },
-                    )
-                    logger.info("Replied to /status from chat %s", chat_id)
+                if not text.strip().startswith("/status") or not chat_id:
+                    continue
 
-    except httpx.HTTPError as exc:
-        logger.warning("Telegram poll failed: %s", exc)
+                if settings.TELEGRAM_CHAT_ID and str(chat_id) != settings.TELEGRAM_CHAT_ID:
+                    logger.warning("Unauthorized /status from chat %s — ignored", chat_id)
+                    continue
+
+                reply = _format_status_message()
+                await client.post(
+                    f"{base}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": reply,
+                        "parse_mode": "HTML",
+                    },
+                )
+                logger.info("Replied to /status from chat %s", chat_id)
+
+    except httpx.HTTPError:
+        logger.warning("Telegram poll failed")

@@ -7,7 +7,7 @@ from app.models.signals import ProcessedSignal
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def format_signal_message(signal: ProcessedSignal) -> str:
@@ -34,7 +34,7 @@ async def send_signal(signal: ProcessedSignal) -> bool:
         logger.warning("Telegram credentials not configured - skipping alert")
         return False
 
-    url = TELEGRAM_API.format(token=settings.TELEGRAM_BOT_TOKEN)
+    url = TELEGRAM_SEND_URL.format(token=settings.TELEGRAM_BOT_TOKEN)
     payload = {
         "chat_id": settings.TELEGRAM_CHAT_ID,
         "text": format_signal_message(signal),
@@ -48,6 +48,6 @@ async def send_signal(signal: ProcessedSignal) -> bool:
             resp.raise_for_status()
             logger.info("Telegram alert sent: %s %s", signal.action, signal.symbol)
             return True
-    except httpx.HTTPError as exc:
-        logger.error("Failed to send Telegram alert: %s", exc)
+    except httpx.HTTPError:
+        logger.error("Failed to send Telegram alert for %s %s", signal.action, signal.symbol)
         return False

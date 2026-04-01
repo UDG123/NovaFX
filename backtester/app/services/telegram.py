@@ -143,6 +143,6 @@ async def send_cycle_report(results: list[PhaseResult], cycle_label: str = "Back
             resp.raise_for_status()
             logger.info("Cycle report sent (%d strategies)", len(results))
             return True
-    except httpx.HTTPError as exc:
-        logger.error("Failed to send cycle report: %s", exc)
+    except httpx.HTTPError:
+        logger.error("Failed to send cycle report")
         return False

@@ -237,9 +237,9 @@ async def fetch_ohlcv(
                     logger.warning("Rate limited on %s, backing off (attempt %d/%d)", symbol, attempt, MAX_RETRIES)
                 else:
                     logger.warning("HTTP %d for %s (attempt %d/%d)", exc.response.status_code, symbol, attempt, MAX_RETRIES)
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                logger.warning("fetch_ohlcv %s failed (attempt %d/%d): %s", symbol, attempt, MAX_RETRIES, exc)
+            except httpx.HTTPError:
+                last_exc = True
+                logger.warning("fetch_ohlcv %s network error (attempt %d/%d)", symbol, attempt, MAX_RETRIES)
 
             if attempt < MAX_RETRIES:
                 delay = BACKOFF_BASE_SECONDS ** attempt
@@ -247,5 +247,5 @@ async def fetch_ohlcv(
                 await asyncio.sleep(delay)
 
     if last_exc:
-        logger.error("All %d fetch attempts failed for %s: %s", MAX_RETRIES, symbol, last_exc)
+        logger.error("All %d fetch attempts failed for %s", MAX_RETRIES, symbol)
     return None

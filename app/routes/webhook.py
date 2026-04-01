@@ -1,3 +1,4 @@
+import hmac
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -19,7 +20,7 @@ async def health():
 @router.post("/webhook")
 async def receive_webhook(signal: IncomingSignal):
     if settings.WEBHOOK_SECRET:
-        if not signal.secret or signal.secret != settings.WEBHOOK_SECRET:
+        if not signal.secret or not hmac.compare_digest(signal.secret, settings.WEBHOOK_SECRET):
             raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
     logger.info("Webhook received: %s %s @ %s", signal.action, signal.symbol, signal.price)

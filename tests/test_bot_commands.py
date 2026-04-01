@@ -170,6 +170,7 @@ class TestPollTelegramCommands:
         with patch("app.services.bot_commands.settings") as mock_settings, \
              patch("httpx.AsyncClient") as MockClient:
             mock_settings.TELEGRAM_BOT_TOKEN = "test-token"
+            mock_settings.TELEGRAM_CHAT_ID = "12345"
             mock_settings.SIGNAL_ENGINE_ENABLED = True
             mock_settings.SIGNAL_ENGINE_INTERVAL_MINUTES = 15
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -183,6 +184,42 @@ class TestPollTelegramCommands:
         assert "NovaFX Status" in call_kwargs[1]["json"]["text"]
 
         assert mod._last_update_id == 1
+
+    @pytest.mark.asyncio
+    async def test_rejects_unauthorized_chat(self):
+        """A /status from a chat_id that doesn't match TELEGRAM_CHAT_ID is ignored."""
+        import app.services.bot_commands as mod
+        mod._last_update_id = 0
+
+        fake_response = {
+            "ok": True,
+            "result": [{
+                "update_id": 3,
+                "message": {
+                    "text": "/status",
+                    "chat": {"id": 99999},
+                },
+            }],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = fake_response
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+
+        with patch("app.services.bot_commands.settings") as mock_settings, \
+             patch("httpx.AsyncClient") as MockClient:
+            mock_settings.TELEGRAM_BOT_TOKEN = "test-token"
+            mock_settings.TELEGRAM_CHAT_ID = "12345"  # only 12345 is authorized
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await poll_telegram_commands()
+
+        mock_client.post.assert_not_called()
+        assert mod._last_update_id == 3
 
     @pytest.mark.asyncio
     async def test_ignores_non_status_messages(self):
