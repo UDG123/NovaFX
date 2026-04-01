@@ -6,6 +6,7 @@ import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
 
+from app.data.fetcher import fetch_ohlcv
 from app.models.signals import IncomingSignal
 
 logger = logging.getLogger(__name__)
@@ -16,27 +17,6 @@ WATCHLIST = [
     "XAUUSD",
     "SPX500", "NAS100",
 ]
-
-
-async def fetch_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100) -> Optional[pd.DataFrame]:
-    """Placeholder - replace with a real data source.
-
-    # Example using yfinance:
-    # import yfinance as yf
-    # ticker = yf.Ticker(symbol)
-    # df = ticker.history(period="5d", interval=timeframe)
-    # df.columns = [c.lower() for c in df.columns]
-    # return df[["open", "high", "low", "close", "volume"]].tail(limit)
-
-    # Example using ccxt:
-    # import ccxt
-    # exchange = ccxt.binance()
-    # ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    # df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    # return df
-    """
-    logger.warning("fetch_ohlcv is a placeholder - no data returned for %s", symbol)
-    return None
 
 
 def strategy_ema_cross(df: pd.DataFrame, symbol: str) -> Optional[IncomingSignal]:
