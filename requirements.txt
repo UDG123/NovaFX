@@ -9,4 +9,3 @@ pandas==2.2.3
 numpy==1.26.4
 apscheduler==3.10.4
 python-dotenv==1.0.1
-yfinance==0.2.40

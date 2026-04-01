@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ACCOUNT_BALANCE: float = 10000.0
     SIGNAL_ENGINE_ENABLED: bool = True
     SIGNAL_ENGINE_INTERVAL_MINUTES: int = 15
+    TWELVEDATA_API_KEY: str = ""
     PORT: int = 8000
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
