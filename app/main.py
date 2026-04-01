@@ -6,6 +6,8 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.routes.webhook import router
+from app.services.bot_commands import poll_telegram_commands
+from app.services.bot_state import BotState
 from app.services.signal_engine import run_signal_engine
 from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
@@ -18,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 async def scheduled_signal_engine():
+    state = BotState.get()
     signals = await run_signal_engine()
     for raw_signal in signals:
         try:
+            state.record_signal(raw_signal)
             processed = process_signal(raw_signal)
             await send_signal(processed)
         except Exception:
@@ -31,6 +35,8 @@ async def scheduled_signal_engine():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler()
+    state = BotState.get()
+    state.scheduler = scheduler
 
     if settings.SIGNAL_ENGINE_ENABLED:
         scheduler.add_job(
@@ -40,11 +46,22 @@ async def lifespan(app: FastAPI):
             id="signal_engine",
             name="NovaFX Signal Engine",
         )
-        scheduler.start()
         logger.info(
             "Signal engine scheduled every %d minutes",
             settings.SIGNAL_ENGINE_INTERVAL_MINUTES,
         )
+
+    if settings.TELEGRAM_BOT_TOKEN:
+        scheduler.add_job(
+            poll_telegram_commands,
+            "interval",
+            seconds=5,
+            id="telegram_poller",
+            name="Telegram Command Poller",
+        )
+        logger.info("Telegram command poller started (every 5s)")
+
+    scheduler.start()
 
     yield
 
