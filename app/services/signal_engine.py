@@ -100,6 +100,8 @@ def strategy_macd_cross(df: pd.DataFrame, symbol: str) -> Optional[IncomingSigna
 
 STRATEGIES = [strategy_ema_cross, strategy_rsi_extreme, strategy_macd_cross]
 
+MIN_CONFLUENCE = 2
+
 
 async def run_signal_engine() -> list[IncomingSignal]:
     logger.info("Signal engine running - scanning %d symbols", len(WATCHLIST))
@@ -110,13 +112,48 @@ async def run_signal_engine() -> list[IncomingSignal]:
         if df is None or df.empty:
             continue
 
+        # Collect each strategy's vote for this symbol
+        raw: list[IncomingSignal] = []
         for strategy in STRATEGIES:
             try:
                 signal = strategy(df, symbol)
                 if signal:
-                    signals.append(signal)
+                    raw.append(signal)
             except Exception:
                 logger.exception("Strategy %s failed on %s", strategy.__name__, symbol)
 
-    logger.info("Signal engine complete - %d signals generated", len(signals))
+        if not raw:
+            continue
+
+        # Count votes per direction
+        buy_signals = [s for s in raw if s.action == "BUY"]
+        sell_signals = [s for s in raw if s.action == "SELL"]
+
+        if len(buy_signals) >= MIN_CONFLUENCE:
+            direction, agreeing = "BUY", buy_signals
+        elif len(sell_signals) >= MIN_CONFLUENCE:
+            direction, agreeing = "SELL", sell_signals
+        else:
+            logger.info(
+                "No confluence for %s (BUY=%d, SELL=%d) - skipping",
+                symbol, len(buy_signals), len(sell_signals),
+            )
+            continue
+
+        indicators = ", ".join(s.indicator for s in agreeing if s.indicator)
+        signals.append(IncomingSignal(
+            symbol=symbol,
+            action=direction,
+            price=float(df["close"].iloc[-1]),
+            timeframe="15m",
+            source="signal_engine",
+            indicator=f"Confluence: {indicators}",
+            confluence_count=len(agreeing),
+        ))
+        logger.info(
+            "Confluence %s on %s (%d/%d strategies agree)",
+            direction, symbol, len(agreeing), len(STRATEGIES),
+        )
+
+    logger.info("Signal engine complete - %d signals emitted", len(signals))
     return signals

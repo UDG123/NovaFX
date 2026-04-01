@@ -14,6 +14,7 @@ class IncomingSignal(BaseModel):
     sl: Optional[float] = None
     tp: Optional[float] = None
     indicator: Optional[str] = None
+    confluence_count: Optional[int] = None
 
 
 class ProcessedSignal(BaseModel):
