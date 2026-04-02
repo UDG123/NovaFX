@@ -5,12 +5,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from app.config import settings
+from app.db.database import init_db
 from app.routes.webhook import router
 from app.services.bot_commands import poll_telegram_commands
 from app.services.bot_state import BotState
 from app.services.signal_engine import run_signal_engine
 from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
+from app.db.signal_store import save_signal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +33,7 @@ async def scheduled_signal_engine():
             state.record_signal(raw_signal)
             processed = process_signal(raw_signal)
             await send_signal(processed)
+            await save_signal(processed)
         except Exception:
             logger.exception(
                 "Failed to process engine signal: %s %s",
@@ -42,6 +45,8 @@ async def scheduled_signal_engine():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_db()
+
     scheduler = AsyncIOScheduler()
     state = BotState.get()
     state.scheduler = scheduler
@@ -95,5 +100,5 @@ async def root():
         "version": "1.0.0",
         "signal_engine_enabled": settings.SIGNAL_ENGINE_ENABLED,
         "signal_engine_interval": f"{settings.SIGNAL_ENGINE_INTERVAL_MINUTES}m",
-        "endpoints": ["/", "/health", "/webhook"],
+        "endpoints": ["/", "/health", "/webhook", "/signals/stats"],
     }
