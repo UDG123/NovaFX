@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     TWELVEDATA_API_KEY: str = ""
     PORT: int = 8000
 
+    # Telegram desk channels (per asset class)
+    TG_DESK1: str = ""  # Forex Majors
+    TG_DESK2: str = ""  # Forex Crosses
+    TG_DESK3: str = ""  # Crypto
+    TG_DESK4: str = ""  # Stocks
+    TG_DESK5: str = ""  # Commodities
+    TG_DESK6: str = ""  # Indices
+    TG_PORTFOLIO: str = ""  # Mirror all signals
+    TG_SYSTEM: str = ""  # System alerts
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
