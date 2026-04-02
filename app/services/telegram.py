@@ -9,20 +9,50 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
-MARKET_UNITS = {
-    "forex": "pips",
-    "crypto": "%",
-    "indices": "pts",
-    "commodities": "pts",
+# --- Desk routing ---
+DESK_MAP = {
+    # Forex Majors
+    "EURUSD": "TG_DESK1", "GBPUSD": "TG_DESK1", "USDJPY": "TG_DESK1",
+    "AUDUSD": "TG_DESK1", "USDCAD": "TG_DESK1", "USDCHF": "TG_DESK1",
+    "NZDUSD": "TG_DESK1",
+    # Forex Crosses
+    "EURGBP": "TG_DESK2", "EURJPY": "TG_DESK2", "GBPJPY": "TG_DESK2",
+    # Crypto
+    "BTCUSDT": "TG_DESK3", "ETHUSDT": "TG_DESK3", "SOLUSDT": "TG_DESK3",
+    "BNBUSDT": "TG_DESK3", "XRPUSDT": "TG_DESK3",
+    "BTCUSD": "TG_DESK3", "ETHUSD": "TG_DESK3", "SOLUSD": "TG_DESK3",
+    "BNBUSD": "TG_DESK3", "XRPUSD": "TG_DESK3",
+    # Stocks
+    "AAPL": "TG_DESK4", "MSFT": "TG_DESK4", "NVDA": "TG_DESK4",
+    "TSLA": "TG_DESK4", "SPY": "TG_DESK4", "QQQ": "TG_DESK4",
+    # Commodities
+    "XAUUSD": "TG_DESK5", "XAGUSD": "TG_DESK5", "USOIL": "TG_DESK5", "UKOIL": "TG_DESK5",
+    # Indices
+    "SPX500": "TG_DESK6", "NAS100": "TG_DESK6", "US30": "TG_DESK6",
 }
 
-FOREX_SYMBOLS = {"EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"}
-CRYPTO_SYMBOLS = {"BTCUSD","ETHUSD","BTCUSDT","ETHUSDT","SOLUSD","SOLUSDT","BNBUSD","BNBUSDT","XRPUSD","XRPUSDT"}
+DESK_NAMES = {
+    "TG_DESK1": "\U0001f30d Forex Majors",
+    "TG_DESK2": "\U0001f500 Forex Crosses",
+    "TG_DESK3": "\u20bf Crypto",
+    "TG_DESK4": "\U0001f4c8 Stocks",
+    "TG_DESK5": "\U0001f947 Commodities",
+    "TG_DESK6": "\U0001f4ca Indices",
+}
+
+FOREX_SYMBOLS = {
+    "EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF",
+    "EURGBP","EURJPY","GBPJPY"
+}
+CRYPTO_SYMBOLS = {
+    "BTCUSD","ETHUSD","BTCUSDT","ETHUSDT","SOLUSD","SOLUSDT",
+    "BNBUSD","BNBUSDT","XRPUSD","XRPUSDT"
+}
 COMMODITY_SYMBOLS = {"XAUUSD","XAGUSD","USOIL","UKOIL"}
 
 
 def _detect_market(symbol: str) -> str:
-    s = symbol.upper().replace("/","").replace("-","")
+    s = symbol.upper().replace("/", "").replace("-", "")
     if s in FOREX_SYMBOLS: return "forex"
     if s in CRYPTO_SYMBOLS: return "crypto"
     if s in COMMODITY_SYMBOLS: return "commodities"
@@ -45,15 +75,23 @@ def _format_price(price: float, market: str) -> str:
     if market == "forex":
         return f"{price:.5f}"
     elif market == "crypto":
-        if price > 1000:
-            return f"{price:,.2f}"
-        return f"{price:.4f}"
+        return f"{price:,.2f}" if price > 1000 else f"{price:.4f}"
     else:
         return f"{price:,.2f}"
 
 
+def _get_desk_chat_id(symbol: str) -> str | None:
+    desk_key = DESK_MAP.get(symbol.upper().replace("/", "").replace("-", ""))
+    if not desk_key:
+        return None
+    return getattr(settings, desk_key, None) or None
+
+
 def format_signal_message(signal: ProcessedSignal) -> str:
     market = _detect_market(signal.symbol)
+    desk_key = DESK_MAP.get(signal.symbol.upper().replace("/", "").replace("-", ""))
+    desk_name = DESK_NAMES.get(desk_key, "\U0001f4e1 NovaFX") if desk_key else "\U0001f4e1 NovaFX"
+
     direction = "\U0001f4c8 BUY" if signal.action == "BUY" else "\U0001f4c9 SELL"
     pair_emoji = "\U0001f537" if signal.action == "BUY" else "\U0001f536"
 
@@ -71,7 +109,7 @@ def format_signal_message(signal: ProcessedSignal) -> str:
     indicator_line = f"\n\U0001f9e0 <b>Strategy:</b> {signal.indicator}" if signal.indicator else ""
 
     return (
-        f"\u26a1 <b>NOVAFX SIGNAL</b>\n\n"
+        f"\u26a1 <b>NOVAFX SIGNAL</b>  |  {desk_name}\n\n"
         f"{pair_emoji} <b>{signal.symbol}</b>  {direction}\n\n"
         f"\U0001f4cd <b>Entry:</b> <code>{entry}</code>\n"
         f"\U0001f534 <b>Stop Loss:</b> <code>{sl}</code>  <i>({sl_diff})</i>\n\n"
@@ -88,25 +126,55 @@ def format_signal_message(signal: ProcessedSignal) -> str:
     )
 
 
-async def send_signal(signal: ProcessedSignal) -> bool:
-    if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
-        logger.warning("Telegram credentials not configured - skipping alert")
-        return False
-
-    url = TELEGRAM_SEND_URL.format(token=settings.TELEGRAM_BOT_TOKEN)
+async def _post_to_channel(chat_id: str, text: str, token: str) -> bool:
+    url = TELEGRAM_SEND_URL.format(token=token)
     payload = {
-        "chat_id": settings.TELEGRAM_CHAT_ID,
-        "text": format_signal_message(signal),
+        "chat_id": chat_id,
+        "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
-            logger.info("Signal sent: %s %s", signal.action, signal.symbol)
             return True
     except httpx.HTTPError:
-        logger.error("Failed to send signal: %s %s", signal.action, signal.symbol)
+        logger.error("Failed to post to chat_id %s", chat_id)
         return False
+
+
+async def send_signal(signal: ProcessedSignal) -> bool:
+    if not settings.TELEGRAM_BOT_TOKEN:
+        logger.warning("TELEGRAM_BOT_TOKEN not set - skipping")
+        return False
+
+    message = format_signal_message(signal)
+    token = settings.TELEGRAM_BOT_TOKEN
+    sent = False
+
+    # 1. Send to desk channel
+    desk_chat_id = _get_desk_chat_id(signal.symbol)
+    if desk_chat_id:
+        ok = await _post_to_channel(desk_chat_id, message, token)
+        if ok:
+            logger.info("Signal sent to desk: %s %s", signal.action, signal.symbol)
+            sent = True
+    else:
+        logger.warning("No desk mapping for symbol: %s", signal.symbol)
+
+    # 2. Mirror to portfolio channel
+    portfolio_id = getattr(settings, "TG_PORTFOLIO", None)
+    if portfolio_id:
+        await _post_to_channel(portfolio_id, message, token)
+
+    return sent
+
+
+async def send_system_alert(message: str) -> bool:
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return False
+    system_id = getattr(settings, "TG_SYSTEM", None)
+    if not system_id:
+        return False
+    return await _post_to_channel(system_id, message, settings.TELEGRAM_BOT_TOKEN)
