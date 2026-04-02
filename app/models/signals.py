@@ -30,7 +30,9 @@ class ProcessedSignal(BaseModel):
     action: str
     entry_price: float = Field(..., gt=0)
     stop_loss: float = Field(..., gt=0)
-    take_profit: float = Field(..., gt=0)
+    take_profit_1: float = Field(..., gt=0)
+    take_profit_2: float = Field(..., gt=0)
+    take_profit_3: float = Field(..., gt=0)
     risk_reward: float = Field(..., ge=0)
     position_size: float = Field(..., ge=0)
     risk_amount: float = Field(..., ge=0)

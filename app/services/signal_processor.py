@@ -49,13 +49,17 @@ def process_signal(signal: IncomingSignal) -> ProcessedSignal:
 
     if signal.action == "BUY":
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 - sl_pct), 6)
-        tp = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
+        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
     else:
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 + sl_pct), 6)
-        tp = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
+        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
+
+    tp_distance = abs(tp1 - signal.price)
+    tp2 = round(tp1 + tp_distance, 6) if signal.action == "BUY" else round(tp1 - tp_distance, 6)
+    tp3 = round(tp1 + 2 * tp_distance, 6) if signal.action == "BUY" else round(tp1 - 2 * tp_distance, 6)
 
     risk_per_unit = abs(signal.price - sl)
-    reward_per_unit = abs(tp - signal.price)
+    reward_per_unit = abs(tp1 - signal.price)
     risk_reward = round(reward_per_unit / risk_per_unit, 2) if risk_per_unit > 0 else 0.0
 
     risk_amount = round(settings.ACCOUNT_BALANCE * (settings.DEFAULT_RISK_PCT / 100), 2)
@@ -66,7 +70,9 @@ def process_signal(signal: IncomingSignal) -> ProcessedSignal:
         action=signal.action,
         entry_price=signal.price,
         stop_loss=sl,
-        take_profit=tp,
+        take_profit_1=tp1,
+        take_profit_2=tp2,
+        take_profit_3=tp3,
         risk_reward=risk_reward,
         position_size=position_size,
         risk_amount=risk_amount,
