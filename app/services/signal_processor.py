@@ -13,7 +13,11 @@ MARKET_CONFIG = {
     "crypto": {
         "sl_pct": 1.5,
         "tp_pct": 3.0,
-        "symbols": ["BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "SOLUSD", "SOLUSDT"],
+        "symbols": [
+            "BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT",
+            "SOLUSD", "SOLUSDT", "BNBUSD", "BNBUSDT",
+            "XRPUSD", "XRPUSDT",
+        ],
     },
     "indices": {
         "sl_pct": 0.5,
@@ -36,7 +40,7 @@ def detect_market(symbol: str) -> str:
     if any(symbol_upper.endswith(c) for c in ("USD", "JPY", "GBP", "EUR", "CHF", "AUD", "CAD", "NZD")):
         if len(symbol_upper) == 6:
             return "forex"
-    if any(t in symbol_upper for t in ("BTC", "ETH", "SOL", "BNB", "USDT", "USDC")):
+    if any(t in symbol_upper for t in ("BTC", "ETH", "SOL", "BNB", "USDT", "USDC", "XRP")):
         return "crypto"
     return "forex"
 
@@ -49,13 +53,17 @@ def process_signal(signal: IncomingSignal) -> ProcessedSignal:
 
     if signal.action == "BUY":
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 - sl_pct), 6)
-        tp = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
+        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
+        tp2 = round(signal.price * (1 + tp_pct * 2), 6)
+        tp3 = round(signal.price * (1 + tp_pct * 3), 6)
     else:
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 + sl_pct), 6)
-        tp = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
+        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
+        tp2 = round(signal.price * (1 - tp_pct * 2), 6)
+        tp3 = round(signal.price * (1 - tp_pct * 3), 6)
 
     risk_per_unit = abs(signal.price - sl)
-    reward_per_unit = abs(tp - signal.price)
+    reward_per_unit = abs(tp1 - signal.price)
     risk_reward = round(reward_per_unit / risk_per_unit, 2) if risk_per_unit > 0 else 0.0
 
     risk_amount = round(settings.ACCOUNT_BALANCE * (settings.DEFAULT_RISK_PCT / 100), 2)
@@ -66,7 +74,9 @@ def process_signal(signal: IncomingSignal) -> ProcessedSignal:
         action=signal.action,
         entry_price=signal.price,
         stop_loss=sl,
-        take_profit=tp,
+        take_profit_1=tp1,
+        take_profit_2=tp2,
+        take_profit_3=tp3,
         risk_reward=risk_reward,
         position_size=position_size,
         risk_amount=risk_amount,
