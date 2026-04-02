@@ -13,7 +13,11 @@ MARKET_CONFIG = {
     "crypto": {
         "sl_pct": 1.5,
         "tp_pct": 3.0,
-        "symbols": ["BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "SOLUSD", "SOLUSDT"],
+        "symbols": [
+            "BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT",
+            "SOLUSD", "SOLUSDT", "BNBUSD", "BNBUSDT",
+            "XRPUSD", "XRPUSDT",
+        ],
     },
     "indices": {
         "sl_pct": 0.5,
@@ -36,7 +40,7 @@ def detect_market(symbol: str) -> str:
     if any(symbol_upper.endswith(c) for c in ("USD", "JPY", "GBP", "EUR", "CHF", "AUD", "CAD", "NZD")):
         if len(symbol_upper) == 6:
             return "forex"
-    if any(t in symbol_upper for t in ("BTC", "ETH", "SOL", "BNB", "USDT", "USDC")):
+    if any(t in symbol_upper for t in ("BTC", "ETH", "SOL", "BNB", "USDT", "USDC", "XRP")):
         return "crypto"
     return "forex"
 
@@ -50,13 +54,13 @@ def process_signal(signal: IncomingSignal) -> ProcessedSignal:
     if signal.action == "BUY":
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 - sl_pct), 6)
         tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
+        tp2 = round(signal.price * (1 + tp_pct * 2), 6)
+        tp3 = round(signal.price * (1 + tp_pct * 3), 6)
     else:
         sl = signal.sl if signal.sl is not None else round(signal.price * (1 + sl_pct), 6)
         tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
-
-    tp_distance = abs(tp1 - signal.price)
-    tp2 = round(tp1 + tp_distance, 6) if signal.action == "BUY" else round(tp1 - tp_distance, 6)
-    tp3 = round(tp1 + 2 * tp_distance, 6) if signal.action == "BUY" else round(tp1 - 2 * tp_distance, 6)
+        tp2 = round(signal.price * (1 - tp_pct * 2), 6)
+        tp3 = round(signal.price * (1 - tp_pct * 3), 6)
 
     risk_per_unit = abs(signal.price - sl)
     reward_per_unit = abs(tp1 - signal.price)
