@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.db.database import init_db
+from app.routes.stats import router as stats_router
 from app.routes.webhook import router
 from app.services.bot_commands import poll_telegram_commands
 from app.services.bot_state import BotState
@@ -91,6 +92,7 @@ app = FastAPI(
 )
 
 app.include_router(router)
+app.include_router(stats_router)
 
 
 @app.get("/")
