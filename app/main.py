@@ -18,6 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress httpx request logging to prevent token exposure in logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 async def scheduled_signal_engine():
     state = BotState.get()
