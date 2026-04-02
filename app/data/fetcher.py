@@ -8,6 +8,7 @@ import httpx
 import pandas as pd
 
 from app.config import settings
+from app.services.api_tracker import APITracker
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ async def _fetch_twelvedata(
 
     resp = await client.get(TWELVEDATA_BASE_URL, params=params, timeout=15)
     resp.raise_for_status()
+    APITracker.get().record_call()
     data = resp.json()
 
     if "values" not in data:
