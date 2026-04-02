@@ -13,10 +13,18 @@ from app.models.signals import IncomingSignal
 logger = logging.getLogger(__name__)
 
 WATCHLIST = [
-    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-    "BTCUSD", "ETHUSD",
-    "XAUUSD",
-    "SPX500", "NAS100",
+    # Forex majors
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
+    # Forex crosses
+    "EURGBP", "EURJPY", "GBPJPY",
+    # Crypto
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    # Stocks
+    "AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ",
+    # Commodities
+    "XAUUSD", "XAGUSD",
+    # Indices
+    "SPX500", "NAS100", "US30",
 ]
 
 
@@ -127,7 +135,12 @@ def strategy_bollinger_reversion(df: pd.DataFrame, symbol: str) -> Optional[Inco
     )
 
 
-STRATEGIES = [strategy_ema_cross, strategy_rsi_extreme, strategy_macd_cross, strategy_bollinger_reversion]
+STRATEGIES = [
+    strategy_ema_cross,
+    strategy_rsi_extreme,
+    strategy_macd_cross,
+    strategy_bollinger_reversion,
+]
 
 MIN_CONFLUENCE = 2
 
@@ -141,7 +154,6 @@ async def run_signal_engine() -> list[IncomingSignal]:
         if df is None or df.empty:
             continue
 
-        # Collect each strategy's vote for this symbol
         raw: list[IncomingSignal] = []
         for strategy in STRATEGIES:
             try:
@@ -154,7 +166,6 @@ async def run_signal_engine() -> list[IncomingSignal]:
         if not raw:
             continue
 
-        # Count votes per direction
         buy_signals = [s for s in raw if s.action == "BUY"]
         sell_signals = [s for s in raw if s.action == "SELL"]
 
