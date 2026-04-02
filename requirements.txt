@@ -9,3 +9,6 @@ pandas==2.2.3
 numpy==1.26.4
 apscheduler==3.10.4
 python-dotenv==1.0.1
+asyncpg==0.29.0
+sqlalchemy==2.0.36
+alembic==1.13.3
