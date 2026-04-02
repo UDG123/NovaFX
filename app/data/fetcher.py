@@ -200,7 +200,10 @@ async def _fetch_twelvedata(
 
     # TwelveData returns newest first; reverse to chronological order
     df = df.iloc[::-1].reset_index(drop=True)
-    df = df[["open", "high", "low", "close", "volume"]]
+    available = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+    df = df[available]
+    if "volume" not in df.columns:
+        df["volume"] = 0
     return df
 
 
