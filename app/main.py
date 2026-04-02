@@ -18,6 +18,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress httpx logs to prevent bot token exposure in Railway logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 async def scheduled_signal_engine():
     state = BotState.get()
@@ -28,7 +32,11 @@ async def scheduled_signal_engine():
             processed = process_signal(raw_signal)
             await send_signal(processed)
         except Exception:
-            logger.exception("Failed to process engine signal: %s %s", raw_signal.action, raw_signal.symbol)
+            logger.exception(
+                "Failed to process engine signal: %s %s",
+                raw_signal.action,
+                raw_signal.symbol,
+            )
     logger.info("Scheduled run complete - %d signals processed", len(signals))
 
 

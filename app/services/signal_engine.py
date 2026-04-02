@@ -9,6 +9,7 @@ from ta.volatility import BollingerBands
 
 from app.data.fetcher import fetch_ohlcv
 from app.models.signals import IncomingSignal
+from app.services.regime import detect_regime, filter_signals_by_regime
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,13 @@ async def run_signal_engine() -> list[IncomingSignal]:
                 logger.exception("Strategy %s failed on %s", strategy.__name__, symbol)
 
         if not raw:
+            continue
+
+        regime = detect_regime(df)
+        raw = filter_signals_by_regime(raw, regime)
+
+        if not raw:
+            logger.info("Regime filter removed all signals for %s (regime=%s)", symbol, regime)
             continue
 
         buy_signals = [s for s in raw if s.action == "BUY"]
