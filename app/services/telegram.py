@@ -9,25 +9,18 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
-# --- Desk routing ---
 DESK_MAP = {
-    # Forex Majors
     "EURUSD": "TG_DESK1", "GBPUSD": "TG_DESK1", "USDJPY": "TG_DESK1",
     "AUDUSD": "TG_DESK1", "USDCAD": "TG_DESK1", "USDCHF": "TG_DESK1",
     "NZDUSD": "TG_DESK1",
-    # Forex Crosses
     "EURGBP": "TG_DESK2", "EURJPY": "TG_DESK2", "GBPJPY": "TG_DESK2",
-    # Crypto
     "BTCUSDT": "TG_DESK3", "ETHUSDT": "TG_DESK3", "SOLUSDT": "TG_DESK3",
     "BNBUSDT": "TG_DESK3", "XRPUSDT": "TG_DESK3",
     "BTCUSD": "TG_DESK3", "ETHUSD": "TG_DESK3", "SOLUSD": "TG_DESK3",
     "BNBUSD": "TG_DESK3", "XRPUSD": "TG_DESK3",
-    # Stocks
     "AAPL": "TG_DESK4", "MSFT": "TG_DESK4", "NVDA": "TG_DESK4",
     "TSLA": "TG_DESK4", "SPY": "TG_DESK4", "QQQ": "TG_DESK4",
-    # Commodities
     "XAUUSD": "TG_DESK5", "XAGUSD": "TG_DESK5", "USOIL": "TG_DESK5", "UKOIL": "TG_DESK5",
-    # Indices
     "SPX500": "TG_DESK6", "NAS100": "TG_DESK6", "US30": "TG_DESK6",
 }
 
@@ -87,7 +80,7 @@ def _get_desk_chat_id(symbol: str) -> str | None:
     return getattr(settings, desk_key, None) or None
 
 
-def format_signal_message(signal: ProcessedSignal) -> str:
+def format_signal_message(signal: ProcessedSignal, htf_bias: dict | None = None) -> str:
     market = _detect_market(signal.symbol)
     desk_key = DESK_MAP.get(signal.symbol.upper().replace("/", "").replace("-", ""))
     desk_name = DESK_NAMES.get(desk_key, "\U0001f4e1 NovaFX") if desk_key else "\U0001f4e1 NovaFX"
@@ -108,6 +101,17 @@ def format_signal_message(signal: ProcessedSignal) -> str:
 
     indicator_line = f"\n\U0001f9e0 <b>Strategy:</b> {signal.indicator}" if signal.indicator else ""
 
+    # HTF bias block
+    if htf_bias:
+        bias_line = (
+            f"\n\n{htf_bias['emoji']} <b>Confidence:</b> {htf_bias['strength']}"
+            f"\n\U0001f4ca <b>1H Bias:</b> {htf_bias['h1_trend'].capitalize()}"
+            f"  |  <b>4H Bias:</b> {htf_bias['h4_trend'].capitalize()}"
+            f"\n<i>{htf_bias['label']}</i>"
+        )
+    else:
+        bias_line = ""
+
     return (
         f"\u26a1 <b>NOVAFX SIGNAL</b>  |  {desk_name}\n\n"
         f"{pair_emoji} <b>{signal.symbol}</b>  {direction}\n\n"
@@ -120,6 +124,7 @@ def format_signal_message(signal: ProcessedSignal) -> str:
         f"<b>Risk:</b> ${signal.risk_amount}"
         f"\n\U0001f4ca <b>Timeframe:</b> {signal.timeframe}"
         f"{indicator_line}"
+        f"{bias_line}"
         f"\n\U0001f4c5 <i>{signal.timestamp.strftime('%d %b %Y  %H:%M UTC')}</i>\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\u26a0\ufe0f <i>Risk max 1-2% per trade. Not financial advice.</i>"
@@ -144,26 +149,26 @@ async def _post_to_channel(chat_id: str, text: str, token: str) -> bool:
         return False
 
 
-async def send_signal(signal: ProcessedSignal) -> bool:
+async def send_signal(signal: ProcessedSignal, htf_bias: dict | None = None) -> bool:
     if not settings.TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN not set - skipping")
         return False
 
-    message = format_signal_message(signal)
+    message = format_signal_message(signal, htf_bias=htf_bias)
     token = settings.TELEGRAM_BOT_TOKEN
     sent = False
 
-    # 1. Send to desk channel
     desk_chat_id = _get_desk_chat_id(signal.symbol)
     if desk_chat_id:
         ok = await _post_to_channel(desk_chat_id, message, token)
         if ok:
-            logger.info("Signal sent to desk: %s %s", signal.action, signal.symbol)
+            logger.info("Signal sent to desk: %s %s [%s]",
+                signal.action, signal.symbol,
+                htf_bias["strength"] if htf_bias else "NO_BIAS")
             sent = True
     else:
         logger.warning("No desk mapping for symbol: %s", signal.symbol)
 
-    # 2. Mirror to portfolio channel
     portfolio_id = getattr(settings, "TG_PORTFOLIO", None)
     if portfolio_id:
         await _post_to_channel(portfolio_id, message, token)

@@ -14,6 +14,7 @@ from app.services.signal_engine import run_signal_engine
 from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
 from app.db.signal_store import save_signal
+from app.services.htf_bias import get_htf_bias
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +34,8 @@ async def scheduled_signal_engine():
         try:
             state.record_signal(raw_signal)
             processed = process_signal(raw_signal)
-            await send_signal(processed)
+            bias = get_htf_bias(raw_signal.symbol, raw_signal.action)
+            await send_signal(processed, htf_bias=bias)
             await save_signal(processed)
         except Exception:
             logger.exception(

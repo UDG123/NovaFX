@@ -8,6 +8,7 @@ from app.config import settings
 from app.models.signals import IncomingSignal
 from app.services.api_tracker import APITracker
 from app.services.bot_state import BotState
+from app.services.htf_bias import get_htf_bias
 from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
 
@@ -45,7 +46,8 @@ async def webhook(request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
     processed = process_signal(signal)
-    sent = await send_signal(processed)
+    bias = get_htf_bias(signal.symbol, signal.action)
+    sent = await send_signal(processed, htf_bias=bias)
 
     state = BotState.get()
     state.record_signal(signal)
