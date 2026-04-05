@@ -15,6 +15,7 @@ from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
 from app.db.signal_store import save_signal
 from app.services.htf_bias import get_htf_bias
+from app.services.outcome_engine import register_signal, run_outcome_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +38,7 @@ async def scheduled_signal_engine():
             bias = get_htf_bias(raw_signal.symbol, raw_signal.action)
             await send_signal(processed, htf_bias=bias)
             await save_signal(processed)
+            await register_signal(processed)
         except Exception:
             logger.exception(
                 "Failed to process engine signal: %s %s",
@@ -76,6 +78,15 @@ async def lifespan(app: FastAPI):
             name="Telegram Command Poller",
         )
         logger.info("Telegram command poller started (every 5s)")
+
+    scheduler.add_job(
+        run_outcome_engine,
+        "interval",
+        seconds=60,
+        id="outcome_engine",
+        name="NovaFX Outcome Monitor",
+    )
+    logger.info("Outcome engine scheduled every 60 seconds")
 
     scheduler.start()
 
