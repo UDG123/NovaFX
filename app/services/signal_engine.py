@@ -9,6 +9,7 @@ from ta.volatility import BollingerBands
 
 from app.data.fetcher import fetch_ohlcv
 from app.models.signals import IncomingSignal
+from app.services.htf_bias import get_htf_bias
 from app.services.regime import detect_regime, filter_signals_by_regime
 
 logger = logging.getLogger(__name__)
@@ -146,9 +147,9 @@ STRATEGIES = [
 MIN_CONFLUENCE = 2
 
 
-async def run_signal_engine() -> list[IncomingSignal]:
+async def run_signal_engine() -> list[tuple[IncomingSignal, dict]]:
     logger.info("Signal engine running - scanning %d symbols", len(WATCHLIST))
-    signals: list[IncomingSignal] = []
+    signals: list[tuple[IncomingSignal, dict]] = []
 
     for symbol in WATCHLIST:
         df = await fetch_ohlcv(symbol)
@@ -189,7 +190,7 @@ async def run_signal_engine() -> list[IncomingSignal]:
             continue
 
         indicators = ", ".join(s.indicator for s in agreeing if s.indicator)
-        signals.append(IncomingSignal(
+        signal = IncomingSignal(
             symbol=symbol,
             action=direction,
             price=float(df["close"].iloc[-1]),
@@ -197,7 +198,9 @@ async def run_signal_engine() -> list[IncomingSignal]:
             source="signal_engine",
             indicator=f"Confluence: {indicators}",
             confluence_count=len(agreeing),
-        ))
+        )
+        bias = get_htf_bias(symbol, direction)
+        signals.append((signal, bias))
         logger.info(
             "Confluence %s on %s (%d/%d strategies agree)",
             direction, symbol, len(agreeing), len(STRATEGIES),

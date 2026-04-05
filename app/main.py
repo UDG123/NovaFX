@@ -5,17 +5,17 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from app.config import settings
-from app.db.database import init_db
+from app.db.database import Base, engine, init_db
+from app.db.signal_store import save_signal
+from app.db.trade_monitor import TradePosition
 from app.routes.stats import router as stats_router
 from app.routes.webhook import router
 from app.services.bot_commands import poll_telegram_commands
 from app.services.bot_state import BotState
+from app.services.outcome_engine import register_signal, run_outcome_engine
 from app.services.signal_engine import run_signal_engine
 from app.services.signal_processor import process_signal
 from app.services.telegram import send_signal
-from app.db.signal_store import save_signal
-from app.services.htf_bias import get_htf_bias
-from app.services.outcome_engine import register_signal, run_outcome_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,34 +23,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Suppress httpx logs to prevent bot token exposure in Railway logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("yfinance").setLevel(logging.WARNING)
+logging.getLogger("peewee").setLevel(logging.WARNING)
 
 
 async def scheduled_signal_engine():
     state = BotState.get()
-    signals = await run_signal_engine()
-    for raw_signal in signals:
+    results = await run_signal_engine()
+    for raw_signal, htf_bias in results:
         try:
             state.record_signal(raw_signal)
             processed = process_signal(raw_signal)
-            bias = get_htf_bias(raw_signal.symbol, raw_signal.action)
-            await send_signal(processed, htf_bias=bias)
+            await send_signal(processed, htf_bias=htf_bias)
             await save_signal(processed)
             await register_signal(processed)
         except Exception:
             logger.exception(
-                "Failed to process engine signal: %s %s",
-                raw_signal.action,
-                raw_signal.symbol,
+                "Failed to process signal: %s %s",
+                raw_signal.action, raw_signal.symbol,
             )
-    logger.info("Scheduled run complete - %d signals processed", len(signals))
+    logger.info("Scheduled run complete - %d signals processed", len(results))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Init all DB tables including new TradePosition
     await init_db()
+    if engine:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
     scheduler = AsyncIOScheduler()
     state = BotState.get()
@@ -69,6 +72,16 @@ async def lifespan(app: FastAPI):
             settings.SIGNAL_ENGINE_INTERVAL_MINUTES,
         )
 
+        # Outcome engine runs every 60 seconds
+        scheduler.add_job(
+            run_outcome_engine,
+            "interval",
+            seconds=60,
+            id="outcome_engine",
+            name="NovaFX Outcome Engine",
+        )
+        logger.info("Outcome engine scheduled every 60 seconds")
+
     if settings.TELEGRAM_BOT_TOKEN:
         scheduler.add_job(
             poll_telegram_commands,
@@ -79,17 +92,7 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Telegram command poller started (every 5s)")
 
-    scheduler.add_job(
-        run_outcome_engine,
-        "interval",
-        seconds=60,
-        id="outcome_engine",
-        name="NovaFX Outcome Monitor",
-    )
-    logger.info("Outcome engine scheduled every 60 seconds")
-
     scheduler.start()
-
     yield
 
     if scheduler.running:
@@ -99,8 +102,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="NovaFX Signal Bot",
-    description="Trading signal processor with TradingView webhook + built-in signal engine",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -112,8 +114,8 @@ app.include_router(stats_router)
 async def root():
     return {
         "service": "NovaFX Signal Bot",
-        "version": "1.0.0",
-        "signal_engine_enabled": settings.SIGNAL_ENGINE_ENABLED,
-        "signal_engine_interval": f"{settings.SIGNAL_ENGINE_INTERVAL_MINUTES}m",
+        "version": "1.1.0",
+        "signal_engine": f"every {settings.SIGNAL_ENGINE_INTERVAL_MINUTES}m",
+        "outcome_engine": "every 60s",
         "endpoints": ["/", "/health", "/webhook", "/signals/stats"],
     }
