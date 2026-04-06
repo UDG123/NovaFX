@@ -13,3 +13,7 @@ asyncpg==0.29.0
 sqlalchemy==2.0.36
 alembic==1.13.3
 yfinance==0.2.40
+redis[hiredis]==5.2.1
+circuitbreaker==2.0.0
+tenacity==9.0.0
+cachetools==5.5.0
