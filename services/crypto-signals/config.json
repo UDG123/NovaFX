@@ -1,0 +1,78 @@
+{
+    "trading_mode": "spot",
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "stake_currency": "USDT",
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.99,
+    "fiat_display_currency": "USD",
+    "timeframe": "1h",
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "pair_whitelist": [
+            "BTC/USDT",
+            "ETH/USDT",
+            "SOL/USDT",
+            "XRP/USDT",
+            "ADA/USDT",
+            "AVAX/USDT",
+            "DOGE/USDT",
+            "LINK/USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "webhook": {
+        "enabled": true,
+        "url": "${DISPATCHER_URL}/webhook/freqtrade",
+        "entry": {
+            "strategy": "{strategy}",
+            "pair": "{pair}",
+            "side": "buy",
+            "timeframe": "{timeframe}",
+            "current_rate": "{current_rate}",
+            "stoploss": "{stoploss}",
+            "confidence": 0.75
+        },
+        "exit": {
+            "strategy": "{strategy}",
+            "pair": "{pair}",
+            "side": "sell",
+            "timeframe": "{timeframe}",
+            "current_rate": "{current_rate}",
+            "profit_percent": "{profit_percent}",
+            "confidence": 0.75
+        },
+        "webhookstatus": null
+    },
+    "telegram": {
+        "enabled": false
+    },
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "0.0.0.0",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "enable_openapi": true,
+        "jwt_secret_key": "novafx-freqtrade-secret",
+        "CORS_origins": ["*"],
+        "username": "novafx",
+        "password": "novafx"
+    },
+    "bot_name": "NovaFX-Crypto",
+    "initial_state": "running",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}
