@@ -1,5 +1,5 @@
 [build]
-dockerfilePath = "Dockerfile"
+dockerfilePath = "services/telegram-bot/Dockerfile"
 
 [deploy]
 restartPolicyType = "ON_FAILURE"

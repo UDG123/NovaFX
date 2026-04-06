@@ -1,5 +1,5 @@
 [build]
-dockerfilePath = "Dockerfile"
+dockerfilePath = "services/stock-signals/Dockerfile"
 
 [deploy]
 restartPolicyType = "ON_FAILURE"

@@ -1,12 +1,10 @@
 FROM freqtradeorg/freqtrade:stable
-COPY config.json /freqtrade/config.json
-COPY strategies/ /freqtrade/user_data/strategies/
-# Install fallback dependencies
+COPY shared/ /freqtrade/shared/
+COPY services/crypto-signals/config.json /freqtrade/config.json
+COPY services/crypto-signals/strategies/ /freqtrade/user_data/strategies/
 RUN pip install --no-cache-dir ccxt cryptocompare httpx circuitbreaker tenacity cachetools websockets
-COPY fallback_scanner.py /freqtrade/
-COPY ws_monitor.py /freqtrade/
-COPY ../../shared /freqtrade/shared/
-# Entrypoint runs Freqtrade + fallback monitor
-COPY entrypoint.sh /freqtrade/
+COPY services/crypto-signals/fallback_scanner.py /freqtrade/
+COPY services/crypto-signals/ws_monitor.py /freqtrade/
+COPY services/crypto-signals/entrypoint.sh /freqtrade/
 RUN chmod +x /freqtrade/entrypoint.sh
 CMD ["/freqtrade/entrypoint.sh"]
