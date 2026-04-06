@@ -1,9 +1,12 @@
 """
 NovaFX Telegram Bot Service.
 
-Subscribes to Redis pub/sub channel "telegram:signals" and forwards
-confluence-validated signals to Telegram channels. Also handles
-/status, /health, and /performance bot commands.
+Subscribes to Redis pub/sub channels:
+  - "telegram:signals" — confluence-validated trading signals
+  - "telegram:health"  — system health alerts (source failures, fallbacks)
+
+Forwards formatted HTML messages to Telegram desk channels.
+Runs in dry mode (log only) when TELEGRAM_BOT_TOKEN is empty.
 """
 
 import asyncio
@@ -37,10 +40,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DISPATCHER_URL = os.getenv("DISPATCHER_URL", "http://localhost:8000")
 
+DRY_MODE = not TELEGRAM_BOT_TOKEN
+
 SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
-# Desk channel mapping (env vars)
 DESK_CHANNELS = {
     AssetClass.CRYPTO: os.getenv("TG_DESK_CRYPTO", ""),
     AssetClass.FOREX: os.getenv("TG_DESK_FOREX", ""),
@@ -49,12 +53,32 @@ DESK_CHANNELS = {
     AssetClass.FUTURES: os.getenv("TG_DESK_FUTURES", ""),
 }
 
-# Stats tracking
 _stats = {
     "signals_received": 0,
     "signals_sent": 0,
+    "health_alerts": 0,
     "errors": 0,
     "started_at": None,
+}
+
+
+# ---------------------------------------------------------------------------
+# Emoji maps
+# ---------------------------------------------------------------------------
+
+ACTION_EMOJI = {
+    SignalAction.BUY: "\U0001f7e2",     # green circle
+    SignalAction.SELL: "\U0001f534",     # red circle
+    SignalAction.CLOSE: "\u26aa",        # white circle
+    SignalAction.HOLD: "\U0001f7e1",     # yellow circle
+}
+
+ASSET_EMOJI = {
+    AssetClass.CRYPTO: "\u20bf",
+    AssetClass.FOREX: "\U0001f4b1",
+    AssetClass.STOCKS: "\U0001f4c8",
+    AssetClass.COMMODITIES: "\U0001f947",
+    AssetClass.FUTURES: "\U0001f4ca",
 }
 
 
@@ -62,50 +86,62 @@ _stats = {
 # Message formatting
 # ---------------------------------------------------------------------------
 
-CONFIDENCE_EMOJI = {
-    "HIGH": "\u2705",
-    "MEDIUM": "\u26a0\ufe0f",
-    "LOW": "\U0001f534",
-}
-
-ASSET_EMOJI = {
-    AssetClass.CRYPTO: "\u20bf",
-    AssetClass.FOREX: "\U0001f30d",
-    AssetClass.STOCKS: "\U0001f4c8",
-    AssetClass.COMMODITIES: "\U0001f947",
-    AssetClass.FUTURES: "\U0001f4ca",
-}
-
 
 def format_confluence_message(result: ConfluenceResult) -> str:
-    """Format a ConfluenceResult as a Telegram HTML message."""
+    """Format a ConfluenceResult as Telegram HTML."""
     action = result.consensus_action
-    direction = "\U0001f4c8 BUY" if action == SignalAction.BUY else "\U0001f4c9 SELL"
-    pair_emoji = "\U0001f537" if action == SignalAction.BUY else "\U0001f536"
+    action_emoji = ACTION_EMOJI.get(action, "\u2753")
+    direction = f"{action_emoji} {action.value.upper()}"
     asset_emoji = ASSET_EMOJI.get(result.asset_class, "\U0001f4e1")
 
     conf_pct = round(result.weighted_confidence * 100)
     if conf_pct >= 80:
-        conf_level = "HIGH"
+        conf_bar = "\u2705 HIGH"
     elif conf_pct >= 60:
-        conf_level = "MEDIUM"
+        conf_bar = "\u26a0\ufe0f MEDIUM"
     else:
-        conf_level = "LOW"
-    conf_emoji = CONFIDENCE_EMOJI.get(conf_level, "\u2753")
+        conf_bar = "\U0001f534 LOW"
 
     sources_count = len(result.contributing_signals)
     ts = result.timestamp.strftime("%d %b %Y  %H:%M UTC")
 
     return (
         f"\u26a1 <b>NOVAFX CONFLUENCE SIGNAL</b>\n\n"
-        f"{pair_emoji} <b>{result.symbol}</b>  {direction}\n"
+        f"{direction}  <b>{result.symbol}</b>\n"
         f"{asset_emoji} {result.asset_class.value.capitalize()}\n\n"
-        f"{conf_emoji} <b>Confidence:</b> {conf_pct}% ({conf_level})\n"
+        f"\U0001f3af <b>Confidence:</b> {conf_pct}% {conf_bar}\n"
         f"\U0001f4ca <b>Sources:</b> {sources_count} independent signals agree\n\n"
         f"\U0001f4c5 <i>{ts}</i>\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\u26a0\ufe0f <i>Risk max 1-2% per trade. Not financial advice.</i>"
     )
+
+
+def format_health_alert(data: dict) -> str:
+    """Format a health alert from telegram:health channel."""
+    severity = data.get("severity", "warning")
+    source = data.get("source", "unknown")
+    message = data.get("message", "")
+    fallback = data.get("fallback", "")
+    ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+
+    if severity == "critical":
+        header = "\U0001f534 <b>CRITICAL ALERT</b>"
+    else:
+        header = "\u26a0\ufe0f <b>WARNING</b>"
+
+    lines = [
+        f"{header}\n",
+        f"\U0001f50c <b>Source:</b> {source}",
+        f"\U0001f4ac <b>Message:</b> {message}",
+    ]
+
+    if fallback:
+        lines.append(f"\U0001f504 <b>Fallback:</b> {fallback}")
+
+    lines.append(f"\n\U0001f4c5 <i>{ts}</i>")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +150,12 @@ def format_confluence_message(result: ConfluenceResult) -> str:
 
 
 async def send_message(chat_id: str, text: str) -> bool:
-    """Send an HTML message to a Telegram chat."""
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
+    """Send an HTML message to Telegram. Logs in dry mode."""
+    if DRY_MODE:
+        logger.info("[DRY MODE] Would send to %s:\n%s", chat_id, text)
+        return True
+
+    if not chat_id:
         return False
 
     url = SEND_URL.format(token=TELEGRAM_BOT_TOKEN)
@@ -138,14 +178,13 @@ async def send_message(chat_id: str, text: str) -> bool:
 
 
 async def send_to_desk(result: ConfluenceResult, text: str) -> bool:
-    """Send to the appropriate desk channel based on asset class."""
+    """Send to desk channel by asset class + mirror to main channel."""
     desk_id = DESK_CHANNELS.get(result.asset_class, "")
     sent = False
 
     if desk_id:
         sent = await send_message(desk_id, text)
 
-    # Always mirror to main channel
     if TELEGRAM_CHAT_ID:
         await send_message(TELEGRAM_CHAT_ID, text)
 
@@ -169,11 +208,14 @@ async def handle_command(command: str, chat_id: str) -> None:
             minutes = remainder // 60
             uptime = f"\u23f1 <b>Uptime:</b> {hours}h {minutes}m\n"
 
+        mode = "\U0001f7e1 DRY MODE" if DRY_MODE else "\U0001f7e2 LIVE"
+
         msg = (
-            f"\U0001f4e1 <b>NovaFX Status</b>\n\n"
+            f"\U0001f4e1 <b>NovaFX Status</b>  |  {mode}\n\n"
             f"{uptime}"
             f"\U0001f4e8 <b>Signals received:</b> {_stats['signals_received']}\n"
             f"\u2705 <b>Signals sent:</b> {_stats['signals_sent']}\n"
+            f"\u26a0\ufe0f <b>Health alerts:</b> {_stats['health_alerts']}\n"
             f"\u274c <b>Errors:</b> {_stats['errors']}\n"
         )
         await send_message(chat_id, msg)
@@ -193,7 +235,7 @@ async def handle_command(command: str, chat_id: str) -> None:
     elif cmd == "/help":
         msg = (
             "\U0001f4d6 <b>NovaFX Bot Commands</b>\n\n"
-            "/status \u2014 Bot stats and uptime\n"
+            "/status \u2014 Bot stats, uptime, mode\n"
             "/health \u2014 Check dispatcher health\n"
             "/help \u2014 Show this message\n"
         )
@@ -202,7 +244,8 @@ async def handle_command(command: str, chat_id: str) -> None:
 
 async def poll_commands() -> None:
     """Poll for Telegram bot commands."""
-    if not TELEGRAM_BOT_TOKEN:
+    if DRY_MODE:
+        logger.info("Dry mode — command polling disabled")
         return
 
     url = UPDATES_URL.format(token=TELEGRAM_BOT_TOKEN)
@@ -233,26 +276,15 @@ async def poll_commands() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Redis pub/sub listener
+# Redis pub/sub listeners
 # ---------------------------------------------------------------------------
 
 
-async def listen_signals() -> None:
-    """Subscribe to Redis pub/sub and forward signals to Telegram."""
-    redis_client = redis.from_url(
-        REDIS_URL, decode_responses=True, socket_connect_timeout=5
-    )
-
-    try:
-        await redis_client.ping()
-        logger.info("Redis connected for pub/sub")
-    except Exception:
-        logger.error("Redis connection failed — telegram bot cannot receive signals")
-        return
-
+async def listen_signals(redis_client: redis.Redis) -> None:
+    """Subscribe to telegram:signals and forward to Telegram."""
     pubsub = redis_client.pubsub()
     await pubsub.subscribe("telegram:signals")
-    logger.info("Subscribed to telegram:signals channel")
+    logger.info("Subscribed to telegram:signals")
 
     try:
         async for message in pubsub.listen():
@@ -274,7 +306,6 @@ async def listen_signals() -> None:
                         result.symbol,
                         result.weighted_confidence * 100,
                     )
-
             except Exception:
                 logger.exception("Failed to process signal message")
                 _stats["errors"] += 1
@@ -283,7 +314,46 @@ async def listen_signals() -> None:
         raise
     finally:
         await pubsub.unsubscribe("telegram:signals")
-        await redis_client.aclose()
+
+
+async def listen_health(redis_client: redis.Redis) -> None:
+    """Subscribe to telegram:health and forward alerts."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe("telegram:health")
+    logger.info("Subscribed to telegram:health")
+
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+
+            _stats["health_alerts"] += 1
+
+            try:
+                data = json.loads(message["data"])
+                text = format_health_alert(data)
+
+                if TELEGRAM_CHAT_ID:
+                    await send_message(TELEGRAM_CHAT_ID, text)
+
+                system_id = os.getenv("TG_SYSTEM", "")
+                if system_id:
+                    await send_message(system_id, text)
+
+                logger.info(
+                    "Health alert: [%s] %s — %s",
+                    data.get("severity", "?"),
+                    data.get("source", "?"),
+                    data.get("message", ""),
+                )
+            except Exception:
+                logger.exception("Failed to process health alert")
+                _stats["errors"] += 1
+
+    except asyncio.CancelledError:
+        raise
+    finally:
+        await pubsub.unsubscribe("telegram:health")
 
 
 # ---------------------------------------------------------------------------
@@ -295,22 +365,41 @@ async def main() -> None:
     """Start all bot tasks."""
     _stats["started_at"] = datetime.now(timezone.utc)
 
+    if DRY_MODE:
+        logger.warning("TELEGRAM_BOT_TOKEN not set — running in DRY MODE (log only)")
+    else:
+        logger.info("NovaFX Telegram Bot started in LIVE mode")
+
+    # Connect to Redis
+    redis_client = redis.from_url(
+        REDIS_URL, decode_responses=True, socket_connect_timeout=5
+    )
+    try:
+        await redis_client.ping()
+        logger.info("Redis connected")
+    except Exception:
+        logger.error("Redis connection failed — bot cannot receive signals")
+        return
+
     # Send startup message
     if TELEGRAM_CHAT_ID:
         await send_message(
             TELEGRAM_CHAT_ID,
-            "\U0001f7e2 <b>NovaFX Telegram Bot started</b>\n"
+            f"\U0001f7e2 <b>NovaFX Telegram Bot started</b>\n"
+            f"{'[DRY MODE]' if DRY_MODE else '[LIVE]'}\n"
             f"\U0001f4c5 {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}",
         )
 
-    logger.info("NovaFX Telegram Bot started")
-
-    # Run signal listener and command poller concurrently
-    await asyncio.gather(
-        listen_signals(),
-        poll_commands(),
-        return_exceptions=True,
-    )
+    try:
+        await asyncio.gather(
+            listen_signals(redis_client),
+            listen_health(redis_client),
+            poll_commands(),
+            return_exceptions=True,
+        )
+    finally:
+        await redis_client.aclose()
+        logger.info("Telegram bot stopped")
 
 
 if __name__ == "__main__":
