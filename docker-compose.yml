@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  dispatcher:
+    build:
+      context: .
+      dockerfile: services/dispatcher/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  crypto-signals:
+    build:
+      context: .
+      dockerfile: services/crypto-signals/Dockerfile
+    env_file: .env
+    environment:
+      - DISPATCHER_URL=http://dispatcher:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - dispatcher
+    restart: on-failure
+
+  forex-signals:
+    build:
+      context: .
+      dockerfile: services/forex-signals/Dockerfile
+    env_file: .env
+    environment:
+      - DISPATCHER_URL=http://dispatcher:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - dispatcher
+    restart: on-failure
+
+  stock-signals:
+    build:
+      context: .
+      dockerfile: services/stock-signals/Dockerfile
+    env_file: .env
+    environment:
+      - DISPATCHER_URL=http://dispatcher:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - dispatcher
+    restart: on-failure
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: services/telegram-bot/Dockerfile
+    env_file: .env
+    environment:
+      - DISPATCHER_URL=http://dispatcher:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  novafx-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    env_file: .env
+    environment:
+      - PORT=8000
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  redis-data:

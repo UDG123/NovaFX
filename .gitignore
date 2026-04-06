@@ -1,4 +1,47 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Database
 *.db
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Freqtrade
+services/crypto-signals/user_data/
+services/crypto-signals/tradesv3.dryrun.sqlite
+
+# Redis dump
+dump.rdb
+
+# Coverage / Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Logs
+*.log
