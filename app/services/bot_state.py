@@ -22,6 +22,7 @@ class BotState:
         self.active_strategy: Optional[str] = None
         self.scheduler: Optional[AsyncIOScheduler] = None
         self.last_fetch_times: dict[str, datetime] = {}
+        self.signals_sent: int = 0
 
     @classmethod
     def get(cls) -> BotState:
@@ -36,6 +37,7 @@ class BotState:
     def record_signal(self, signal: IncomingSignal) -> None:
         self.last_signal = signal
         self.last_signal_time = datetime.now(timezone.utc)
+        self.signals_sent += 1
         if signal.indicator:
             self.active_strategy = signal.indicator
 
