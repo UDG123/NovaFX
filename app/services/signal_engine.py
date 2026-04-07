@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Optional
 
 import numpy as np
@@ -145,6 +146,9 @@ STRATEGIES = [
 ]
 
 MIN_CONFLUENCE = 2
+COOLDOWN_SECONDS = 3600  # 1 hour — don't re-signal same symbol+direction
+
+_signal_cooldown: dict[str, float] = {}  # "SYMBOL:DIRECTION" -> timestamp
 
 
 async def run_signal_engine() -> list[tuple[IncomingSignal, dict]]:
@@ -189,6 +193,17 @@ async def run_signal_engine() -> list[tuple[IncomingSignal, dict]]:
             )
             continue
 
+        # Cooldown check — suppress duplicate signals within window
+        cooldown_key = f"{symbol}:{direction}"
+        now = time.monotonic()
+        last_emitted = _signal_cooldown.get(cooldown_key)
+        if last_emitted is not None and (now - last_emitted) < COOLDOWN_SECONDS:
+            logger.info(
+                "Signal suppressed for %s %s — cooldown active (%ds)",
+                symbol, direction, COOLDOWN_SECONDS,
+            )
+            continue
+
         indicators = ", ".join(s.indicator for s in agreeing if s.indicator)
         signal = IncomingSignal(
             symbol=symbol,
@@ -201,10 +216,16 @@ async def run_signal_engine() -> list[tuple[IncomingSignal, dict]]:
         )
         bias = get_htf_bias(symbol, direction)
         signals.append((signal, bias))
+        _signal_cooldown[cooldown_key] = now
         logger.info(
             "Confluence %s on %s (%d/%d strategies agree)",
             direction, symbol, len(agreeing), len(STRATEGIES),
         )
+
+    # Purge expired cooldown entries
+    expired = [k for k, v in _signal_cooldown.items() if (time.monotonic() - v) > COOLDOWN_SECONDS]
+    for k in expired:
+        del _signal_cooldown[k]
 
     logger.info("Signal engine complete - %d signals emitted", len(signals))
     return signals
