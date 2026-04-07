@@ -43,7 +43,7 @@ class NovaFXCryptoStrategy(IStrategy):
         dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=self.ema_fast_period.value)
         dataframe["ema_slow"] = ta.EMA(dataframe, timeperiod=self.ema_slow_period.value)
 
-        bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2, nbdevdn=2)
+        bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2.0, nbdevdn=2.0)
         dataframe["bb_upper"] = bollinger["upperband"]
         dataframe["bb_middle"] = bollinger["middleband"]
         dataframe["bb_lower"] = bollinger["lowerband"]
