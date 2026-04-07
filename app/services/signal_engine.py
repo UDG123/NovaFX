@@ -26,7 +26,7 @@ WATCHLIST = [
     # Commodities
     "XAUUSD", "XAGUSD",
     # Indices
-    "SPX500", "NAS100", "US30",
+    "SPX500",
 ]
 
 

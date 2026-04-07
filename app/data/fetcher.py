@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import time
+from io import StringIO
 from pathlib import Path
 
 import httpx
@@ -53,9 +54,12 @@ def map_symbol(symbol: str) -> str:
         return COMMODITY_MAP[upper]
 
     # Crypto: first 3-4 chars are base, rest is quote (BTC+USD, ETH+USDT)
+    # TwelveData uses /USD not /USDT — strip trailing T
     for base in sorted(CRYPTO_BASES, key=len, reverse=True):
         if upper.startswith(base) and len(upper) > len(base):
             quote = upper[len(base):]
+            if quote == "USDT":
+                quote = "USD"
             return f"{base}/{quote}"
 
     # Forex: 6-char pairs like EURUSD -> EUR/USD
@@ -148,7 +152,7 @@ def _get_cached(key: str) -> pd.DataFrame | None:
     if time.time() - fetched_at > CACHE_TTL_SECONDS:
         return None
 
-    df = pd.read_json(data_json, orient="split")
+    df = pd.read_json(StringIO(data_json), orient="split")
     logger.info("Cache hit for %s", key)
     return df
 
