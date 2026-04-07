@@ -37,7 +37,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+_raw_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = int(_raw_chat_id) if _raw_chat_id.lstrip("-").isdigit() else _raw_chat_id
 DISPATCHER_URL = os.getenv("DISPATCHER_URL", "http://localhost:8000")
 
 DRY_MODE = not TELEGRAM_BOT_TOKEN
@@ -167,12 +168,18 @@ async def send_message(chat_id: str, text: str) -> bool:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(url, json=payload)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                logger.error(
+                    "Telegram API error for chat %s: %s — %s",
+                    chat_id, resp.status_code, resp.text,
+                )
+                _stats["errors"] += 1
+                return False
             return True
-    except Exception:
-        logger.error("Failed to send message to %s", chat_id)
+    except Exception as exc:
+        logger.error("Failed to send message to chat %s: %s", chat_id, exc)
         _stats["errors"] += 1
         return False
 
@@ -381,14 +388,33 @@ async def main() -> None:
         logger.error("Redis connection failed — bot cannot receive signals")
         return
 
-    # Send startup message
-    if TELEGRAM_CHAT_ID:
-        await send_message(
-            TELEGRAM_CHAT_ID,
+    # Send startup message with retry
+    if TELEGRAM_CHAT_ID and not DRY_MODE:
+        startup_text = (
             f"\U0001f7e2 <b>NovaFX Telegram Bot started</b>\n"
-            f"{'[DRY MODE]' if DRY_MODE else '[LIVE]'}\n"
-            f"\U0001f4c5 {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}",
+            f"[LIVE]\n"
+            f"\U0001f4c5 {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}"
         )
+        url = SEND_URL.format(token=TELEGRAM_BOT_TOKEN)
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.post(
+                        url,
+                        json={"chat_id": TELEGRAM_CHAT_ID, "text": startup_text, "parse_mode": "HTML"},
+                    )
+                    if resp.status_code == 200:
+                        logger.info("Startup message sent successfully")
+                        break
+                    else:
+                        logger.warning(
+                            "Startup message attempt %d/3 failed: %s — %s",
+                            attempt, resp.status_code, resp.text,
+                        )
+            except Exception as exc:
+                logger.warning("Startup message attempt %d/3 error: %s", attempt, exc)
+            if attempt < 3:
+                await asyncio.sleep(5)
 
     try:
         await asyncio.gather(
