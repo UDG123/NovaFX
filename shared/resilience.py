@@ -312,7 +312,7 @@ class DataSourceManager:
             breaker = self._breakers[source.name]
 
             # Skip if circuit is open
-            if breaker.current_state == "open":
+            if breaker.state == "open":
                 health.circuit_open = True
                 continue
             health.circuit_open = False
