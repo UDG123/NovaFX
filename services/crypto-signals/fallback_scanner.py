@@ -116,9 +116,9 @@ class CCXTSource(DataSource):
     async def health_check(self) -> bool:
         import ccxt.async_support as ccxt
 
-        exchange = ccxt.binance({"enableRateLimit": True})
+        exchange = ccxt.kraken({"enableRateLimit": True})
         try:
-            await exchange.fetch_ticker("BTC/USDT")
+            await exchange.fetch_ticker("BTC/USD")
             return True
         except Exception:
             return False

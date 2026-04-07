@@ -24,6 +24,7 @@
         ],
         "pair_blacklist": []
     },
+    "pairlists": [{"method": "StaticPairList"}],
     "entry_pricing": {
         "price_side": "same",
         "use_order_book": true,
@@ -58,7 +59,9 @@
         "webhookstatus": null
     },
     "telegram": {
-        "enabled": false
+        "enabled": false,
+        "token": "",
+        "chat_id": ""
     },
     "api_server": {
         "enabled": true,
