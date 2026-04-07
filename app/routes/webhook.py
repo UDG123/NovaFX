@@ -19,13 +19,30 @@ router = APIRouter()
 @router.get("/health")
 async def health():
     state = BotState.get()
-    api = APITracker.get()
+
+    if not state.scheduler_running():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "reason": "scheduler not running",
+                "service": "NovaFX Signal Bot",
+            },
+        )
+
+    next_run = state.get_next_run_time()
     return {
         "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "NovaFX Signal Bot",
+        "uptime_seconds": state.uptime_seconds(),
         "signal_engine_enabled": settings.SIGNAL_ENGINE_ENABLED,
         "signals_sent_session": state.signals_sent,
-        "twelvedata_api": api.status(),
+        "active_strategy": state.active_strategy,
+        "last_fetch_per_symbol": {
+            k: v.isoformat() for k, v in state.last_fetch_times.items()
+        },
+        "scheduler_next_run": next_run.isoformat() if next_run else None,
+        "twelvedata_api": APITracker.get().status(),
     }
 
 

@@ -90,6 +90,26 @@ class TestMACDCross:
         assert signal is None
 
 
+_DUMMY_BIAS = {
+    "strength": "MODERATE",
+    "h1_trend": "neutral",
+    "h4_trend": "neutral",
+    "signal_action": "BUY",
+    "agreements": 1,
+    "emoji": "\u26a0\ufe0f",
+    "label": "test",
+}
+
+
+def _confluence_patches():
+    """Return common patches for regime filter and HTF bias."""
+    return (
+        patch("app.services.signal_engine.detect_regime", return_value="trending"),
+        patch("app.services.signal_engine.filter_signals_by_regime", side_effect=lambda signals, regime: signals),
+        patch("app.services.signal_engine.get_htf_bias", return_value=_DUMMY_BIAS),
+    )
+
+
 class TestConfluenceFilter:
     """Tests that run_signal_engine only emits signals when >=2 strategies agree."""
 
@@ -99,39 +119,47 @@ class TestConfluenceFilter:
         buy = IncomingSignal(symbol="EURUSD", action="BUY", price=1.1, source="signal_engine", indicator="A")
         buy2 = IncomingSignal(symbol="EURUSD", action="BUY", price=1.1, source="signal_engine", indicator="B")
 
+        p1, p2, p3 = _confluence_patches()
         with patch("app.services.signal_engine.fetch_ohlcv", new_callable=AsyncMock) as mock_fetch, \
              patch("app.services.signal_engine.WATCHLIST", ["EURUSD"]), \
+             p1, p2, p3, \
              patch("app.services.signal_engine.STRATEGIES", [lambda df, s: buy, lambda df, s: buy2, lambda df, s: None]):
             mock_fetch.return_value = _dummy_df()
             signals = await run_signal_engine()
 
         assert len(signals) == 1
-        assert signals[0].action == "BUY"
-        assert signals[0].confluence_count == 2
-        assert "A" in signals[0].indicator
-        assert "B" in signals[0].indicator
+        signal, bias = signals[0]
+        assert signal.action == "BUY"
+        assert signal.confluence_count == 2
+        assert "A" in signal.indicator
+        assert "B" in signal.indicator
 
     @pytest.mark.asyncio
     async def test_three_sell_signals_emits(self):
         """All three SELL -> emits with confluence_count=3."""
         sell = lambda df, s: IncomingSignal(symbol="EURUSD", action="SELL", price=1.1, source="signal_engine", indicator="X")
 
+        p1, p2, p3 = _confluence_patches()
         with patch("app.services.signal_engine.fetch_ohlcv", new_callable=AsyncMock) as mock_fetch, \
              patch("app.services.signal_engine.WATCHLIST", ["EURUSD"]), \
+             p1, p2, p3, \
              patch("app.services.signal_engine.STRATEGIES", [sell, sell, sell]):
             mock_fetch.return_value = _dummy_df()
             signals = await run_signal_engine()
 
         assert len(signals) == 1
-        assert signals[0].confluence_count == 3
+        signal, bias = signals[0]
+        assert signal.confluence_count == 3
 
     @pytest.mark.asyncio
     async def test_one_signal_only_no_confluence(self):
         """Only one strategy triggers -> no signal emitted."""
         buy = IncomingSignal(symbol="EURUSD", action="BUY", price=1.1, source="signal_engine", indicator="A")
 
+        p1, p2, p3 = _confluence_patches()
         with patch("app.services.signal_engine.fetch_ohlcv", new_callable=AsyncMock) as mock_fetch, \
              patch("app.services.signal_engine.WATCHLIST", ["EURUSD"]), \
+             p1, p2, p3, \
              patch("app.services.signal_engine.STRATEGIES", [lambda df, s: buy, lambda df, s: None, lambda df, s: None]):
             mock_fetch.return_value = _dummy_df()
             signals = await run_signal_engine()
@@ -144,8 +172,10 @@ class TestConfluenceFilter:
         buy = IncomingSignal(symbol="EURUSD", action="BUY", price=1.1, source="signal_engine", indicator="A")
         sell = IncomingSignal(symbol="EURUSD", action="SELL", price=1.1, source="signal_engine", indicator="B")
 
+        p1, p2, p3 = _confluence_patches()
         with patch("app.services.signal_engine.fetch_ohlcv", new_callable=AsyncMock) as mock_fetch, \
              patch("app.services.signal_engine.WATCHLIST", ["EURUSD"]), \
+             p1, p2, p3, \
              patch("app.services.signal_engine.STRATEGIES", [lambda df, s: buy, lambda df, s: sell, lambda df, s: None]):
             mock_fetch.return_value = _dummy_df()
             signals = await run_signal_engine()
@@ -168,9 +198,10 @@ class TestConfluenceFilter:
         buy_a = IncomingSignal(symbol="EURUSD", action="BUY", price=1.1, source="signal_engine", indicator="A")
         buy_b = IncomingSignal(symbol="GBPUSD", action="BUY", price=1.3, source="signal_engine", indicator="B")
 
-        # Each symbol gets only 1 BUY — not enough for confluence on either
+        p1, p2, p3 = _confluence_patches()
         with patch("app.services.signal_engine.fetch_ohlcv", new_callable=AsyncMock) as mock_fetch, \
              patch("app.services.signal_engine.WATCHLIST", ["EURUSD", "GBPUSD"]), \
+             p1, p2, p3, \
              patch("app.services.signal_engine.STRATEGIES", [
                  lambda df, s: buy_a if s == "EURUSD" else buy_b,
                  lambda df, s: None,
