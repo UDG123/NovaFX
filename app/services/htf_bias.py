@@ -89,7 +89,12 @@ def get_htf_bias(symbol: str, signal_action: str) -> dict:
 
     # Fetch 1H (last 30 days) and 4H (last 60 days)
     df_1h = _fetch_candles(ticker, "1h", "30d")
-    df_4h = _fetch_candles(ticker, "1h", "60d")  # yfinance max for 1h is 730d; we downsample for 4H
+    if df_1h is not None and len(df_1h) > 1:
+        df_1h = df_1h.iloc[:-1]  # Drop incomplete current candle
+
+    df_4h = _fetch_candles(ticker, "1h", "60d")
+    if df_4h is not None and len(df_4h) > 1:
+        df_4h = df_4h.iloc[:-1]  # Drop incomplete current candle
 
     h1_trend = _get_trend(df_1h)
 

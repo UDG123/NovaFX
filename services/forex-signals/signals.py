@@ -58,6 +58,22 @@ def _ema(values: np.ndarray, period: int) -> float:
     return ema
 
 
+def _compute_atr(candles: list[dict], period: int = 14) -> float | None:
+    """Compute ATR from candle dicts."""
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        pc = candles[i - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return float(np.mean(trs[-period:]))
+
+
 def analyze_candles(
     symbol: str,
     candles: list[dict],
@@ -79,9 +95,18 @@ def analyze_candles(
     ema_slow = _ema(closes, 26)
     price = float(closes[-1])
 
-    is_jpy = symbol in JPY_PAIRS
-    sl_distance = PIP_JPY if is_jpy else PIP_STANDARD
-    tp_distance = TP_JPY if is_jpy else TP_STANDARD
+    if any(np.isnan(v) for v in [rsi, ema_fast, ema_slow]):
+        return None
+
+    # ATR-based stops with fallback
+    atr = _compute_atr(candles)
+    if atr and atr > 0:
+        sl_distance = atr * 1.5
+        tp_distance = atr * 3.0
+    else:
+        is_jpy = symbol in JPY_PAIRS
+        sl_distance = PIP_JPY if is_jpy else PIP_STANDARD
+        tp_distance = TP_JPY if is_jpy else TP_STANDARD
 
     metadata = {
         "rsi": round(rsi, 2),

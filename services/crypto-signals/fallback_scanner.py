@@ -295,6 +295,22 @@ def _compute_ema(values: list[float], period: int) -> float:
     return float(ema)
 
 
+def _compute_atr(candles: list[dict], period: int = 14) -> float | None:
+    """Compute ATR from candle dicts."""
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        pc = candles[i - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return float(np.mean(trs[-period:]))
+
+
 def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     """Run RSI + EMA crossover strategy on candle data."""
     if len(candles) < 30:
@@ -306,9 +322,17 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     ema_slow = _compute_ema(closes, 26)
     price = closes[-1]
 
+    if any(np.isnan(v) for v in [rsi, ema_fast, ema_slow]):
+        return None
+
+    atr = _compute_atr(candles)
+    metadata = {"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)}
+
     # Buy signal
     if rsi < 35 and ema_fast > ema_slow:
         confidence = min(0.5 + (35 - rsi) / 50, 1.0)
+        sl = round(price - atr * 2.0, 2) if atr else None
+        tp = [round(price + atr * 4.0, 2)] if atr else None
         return Signal(
             source="ccxt-crypto-fallback",
             action=SignalAction.BUY,
@@ -316,14 +340,18 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             asset_class=AssetClass.CRYPTO,
             confidence=round(confidence, 3),
             price=price,
+            stop_loss=sl,
+            take_profit=tp,
             timeframe="1h",
             strategy="RSI-EMA-Fallback",
-            metadata={"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)},
+            metadata=metadata,
         )
 
     # Sell signal
     if rsi > 65 and ema_fast < ema_slow:
         confidence = min(0.5 + (rsi - 65) / 50, 1.0)
+        sl = round(price + atr * 2.0, 2) if atr else None
+        tp = [round(price - atr * 4.0, 2)] if atr else None
         return Signal(
             source="ccxt-crypto-fallback",
             action=SignalAction.SELL,
@@ -331,9 +359,11 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             asset_class=AssetClass.CRYPTO,
             confidence=round(confidence, 3),
             price=price,
+            stop_loss=sl,
+            take_profit=tp,
             timeframe="1h",
             strategy="RSI-EMA-Fallback",
-            metadata={"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)},
+            metadata=metadata,
         )
 
     return None
@@ -375,7 +405,7 @@ async def run_scanner(manager: DataSourceManager) -> None:
     """Scan all watchlist symbols and generate signals."""
     for symbol in WATCHLIST:
         try:
-            result = await manager.get_candles(symbol, "1h", 100)
+            result = await manager.get_candles(symbol, "1h", 250)
             candles = result["candles"]
             signal = analyze_candles(symbol, candles)
             if signal:

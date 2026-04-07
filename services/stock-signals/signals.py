@@ -51,6 +51,22 @@ def _ema(values: np.ndarray, period: int) -> float:
     return ema
 
 
+def _compute_atr(candles: list[dict], period: int = 14) -> float | None:
+    """Compute ATR from candle dicts."""
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        pc = candles[i - 1]["close"]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return float(np.mean(trs[-period:]))
+
+
 def analyze_candles(
     symbol: str,
     candles: list[dict],
@@ -72,6 +88,18 @@ def analyze_candles(
     ema_slow = _ema(closes, 26)
     price = float(closes[-1])
 
+    if any(np.isnan(v) for v in [rsi, ema_fast, ema_slow]):
+        return None
+
+    # ATR-based stops with fallback
+    atr = _compute_atr(candles)
+    if atr and atr > 0:
+        sl_distance = atr * 2.0
+        tp_distance = atr * 4.0
+    else:
+        sl_distance = price * SL_PERCENT
+        tp_distance = price * TP_PERCENT
+
     metadata = {
         "rsi": round(rsi, 2),
         "ema_fast": round(ema_fast, 4),
@@ -91,8 +119,8 @@ def analyze_candles(
             asset_class=AssetClass.STOCKS,
             confidence=round(confidence, 3),
             price=price,
-            stop_loss=round(price * (1 - SL_PERCENT), 2),
-            take_profit=[round(price * (1 + TP_PERCENT), 2)],
+            stop_loss=round(price - sl_distance, 2),
+            take_profit=[round(price + tp_distance, 2)],
             timeframe="1h",
             strategy="RSI-EMA-Stocks",
             metadata=metadata,
@@ -108,8 +136,8 @@ def analyze_candles(
             asset_class=AssetClass.STOCKS,
             confidence=round(confidence, 3),
             price=price,
-            stop_loss=round(price * (1 + SL_PERCENT), 2),
-            take_profit=[round(price * (1 - TP_PERCENT), 2)],
+            stop_loss=round(price + sl_distance, 2),
+            take_profit=[round(price - tp_distance, 2)],
             timeframe="1h",
             strategy="RSI-EMA-Stocks",
             metadata=metadata,

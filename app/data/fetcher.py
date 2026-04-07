@@ -217,7 +217,7 @@ async def _fetch_twelvedata(
 
 
 async def fetch_ohlcv(
-    symbol: str, timeframe: str = "15m", limit: int = 100
+    symbol: str, timeframe: str = "15m", limit: int = 250
 ) -> pd.DataFrame | None:
     """Fetch OHLCV from TwelveData with SQLite cache (1h TTL) and retry."""
     if not settings.TWELVEDATA_API_KEY:

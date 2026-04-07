@@ -32,10 +32,10 @@ logging.getLogger("peewee").setLevel(logging.WARNING)
 async def scheduled_signal_engine():
     state = BotState.get()
     results = await run_signal_engine()
-    for raw_signal, htf_bias in results:
+    for raw_signal, htf_bias, df in results:
         try:
             state.record_signal(raw_signal)
-            processed = process_signal(raw_signal)
+            processed = process_signal(raw_signal, df=df)
             await send_signal(processed, htf_bias=htf_bias)
             await save_signal(processed)
             await register_signal(processed)

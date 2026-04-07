@@ -123,7 +123,7 @@ async def scan_cycle(manager: DataSourceManager) -> None:
 
     for symbol in WATCHLIST:
         try:
-            result = await manager.get_candles(symbol, "1h", 100)
+            result = await manager.get_candles(symbol, "1h", 250)
             candles = result["candles"]
             source = result["source"]
             confidence = result["confidence"]

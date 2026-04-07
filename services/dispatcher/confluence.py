@@ -24,6 +24,20 @@ DEFAULT_SOURCE_WEIGHTS: dict[str, float] = {
     "tradingview": 0.8,
     "finnhub": 0.9,
     "cryptocompare": 0.8,
+    "ccxt-crypto-fallback": 0.9,
+}
+
+# Dimension tags for deduplication
+SOURCE_DIMENSIONS: dict[str, str] = {
+    "freqtrade": "multi",
+    "twelvedata-forex": "trend",
+    "twelvedata-stocks": "trend",
+    "twelvedata-crypto": "trend",
+    "alpaca-stocks": "momentum",
+    "finnhub": "trend",
+    "tradingview": "external",
+    "cryptocompare": "momentum",
+    "ccxt-crypto-fallback": "momentum",
 }
 
 
@@ -33,7 +47,7 @@ class ConfluenceEngine:
     def __init__(
         self,
         redis_client: redis.Redis,
-        window_sec: int = 300,
+        window_sec: int = 3600,
         min_sources: int = 2,
         min_confidence: float = 0.6,
         source_weights: Optional[dict[str, float]] = None,
@@ -93,10 +107,17 @@ class ConfluenceEngine:
                 continue
 
         unique_sources = len(by_group)
-        if unique_sources < self._min_sources:
+
+        # Dimension-aware: count distinct signal dimensions, not just sources
+        dimensions_seen = set()
+        for group, signal in by_group.items():
+            dim = SOURCE_DIMENSIONS.get(self._source_group(signal.source), "unknown")
+            dimensions_seen.add(dim)
+
+        if len(dimensions_seen) < self._min_sources:
             logger.debug(
-                "Confluence %s: %d unique sources < %d required",
-                symbol, unique_sources, self._min_sources,
+                "Confluence %s: %d dimensions < %d required (sources=%d)",
+                symbol, len(dimensions_seen), self._min_sources, unique_sources,
             )
             return None
 

@@ -1,18 +1,35 @@
+import numpy as np
+import pandas as pd
+
 from app.config import settings
 from app.models.signals import IncomingSignal, ProcessedSignal
 
+# ATR multipliers per asset class
+ATR_CONFIG = {
+    "forex": {"sl_mult": 1.5, "tp1_mult": 2.0, "tp2_mult": 3.0, "tp3_mult": 4.5},
+    "crypto": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 8.0},
+    "indices": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
+    "commodities": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
+    "stocks": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
+}
+
+# Fallback percentages (only used if ATR unavailable)
+FALLBACK_CONFIG = {
+    "forex": {"sl_pct": 0.3, "tp_pct": 0.6},
+    "crypto": {"sl_pct": 1.5, "tp_pct": 3.0},
+    "indices": {"sl_pct": 0.5, "tp_pct": 1.0},
+    "commodities": {"sl_pct": 0.8, "tp_pct": 1.6},
+    "stocks": {"sl_pct": 1.0, "tp_pct": 2.0},
+}
+
 MARKET_CONFIG = {
     "forex": {
-        "sl_pct": 0.3,
-        "tp_pct": 0.6,
         "symbols": [
             "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "NZDUSD", "USDCHF", "EURGBP", "EURJPY", "GBPJPY",
         ],
     },
     "crypto": {
-        "sl_pct": 1.5,
-        "tp_pct": 3.0,
         "symbols": [
             "BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT",
             "SOLUSD", "SOLUSDT", "BNBUSD", "BNBUSDT",
@@ -20,13 +37,9 @@ MARKET_CONFIG = {
         ],
     },
     "indices": {
-        "sl_pct": 0.5,
-        "tp_pct": 1.0,
         "symbols": ["SPX500", "NAS100", "US30", "DE40", "UK100", "JP225"],
     },
     "commodities": {
-        "sl_pct": 0.8,
-        "tp_pct": 1.6,
         "symbols": ["XAUUSD", "XAGUSD", "USOIL", "UKOIL"],
     },
 }
@@ -42,25 +55,67 @@ def detect_market(symbol: str) -> str:
             return "forex"
     if any(t in symbol_upper for t in ("BTC", "ETH", "SOL", "BNB", "USDT", "USDC", "XRP")):
         return "crypto"
+    if symbol_upper in ("AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ", "GOOGL", "AMZN", "META", "AMD"):
+        return "stocks"
     return "forex"
 
 
-def process_signal(signal: IncomingSignal) -> ProcessedSignal:
-    market = detect_market(signal.symbol)
-    cfg = MARKET_CONFIG.get(market, MARKET_CONFIG["forex"])
-    sl_pct = cfg["sl_pct"] / 100
-    tp_pct = cfg["tp_pct"] / 100
+def compute_atr(df: pd.DataFrame, period: int = 14) -> float | None:
+    """Compute ATR from OHLCV DataFrame."""
+    if df is None or len(df) < period + 1:
+        return None
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
+    tr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(
+            np.abs(high[1:] - close[:-1]),
+            np.abs(low[1:] - close[:-1])
+        )
+    )
+    if len(tr) < period:
+        return None
+    atr = float(np.mean(tr[-period:]))
+    return atr if not np.isnan(atr) else None
 
-    if signal.action == "BUY":
-        sl = signal.sl if signal.sl is not None else round(signal.price * (1 - sl_pct), 6)
-        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 + tp_pct), 6)
-        tp2 = round(signal.price * (1 + tp_pct * 2), 6)
-        tp3 = round(signal.price * (1 + tp_pct * 3), 6)
+
+def process_signal(signal: IncomingSignal, df: pd.DataFrame = None) -> ProcessedSignal:
+    """Process signal with ATR-based stops when data available, fallback to percentage."""
+    market = detect_market(signal.symbol)
+    atr = compute_atr(df) if df is not None else None
+
+    if atr and atr > 0:
+        cfg = ATR_CONFIG.get(market, ATR_CONFIG["forex"])
+        sl_dist = atr * cfg["sl_mult"]
+        tp1_dist = atr * cfg["tp1_mult"]
+        tp2_dist = atr * cfg["tp2_mult"]
+        tp3_dist = atr * cfg["tp3_mult"]
+
+        if signal.action == "BUY":
+            sl = signal.sl if signal.sl else round(signal.price - sl_dist, 6)
+            tp1 = signal.tp if signal.tp else round(signal.price + tp1_dist, 6)
+            tp2 = round(signal.price + tp2_dist, 6)
+            tp3 = round(signal.price + tp3_dist, 6)
+        else:
+            sl = signal.sl if signal.sl else round(signal.price + sl_dist, 6)
+            tp1 = signal.tp if signal.tp else round(signal.price - tp1_dist, 6)
+            tp2 = round(signal.price - tp2_dist, 6)
+            tp3 = round(signal.price - tp3_dist, 6)
     else:
-        sl = signal.sl if signal.sl is not None else round(signal.price * (1 + sl_pct), 6)
-        tp1 = signal.tp if signal.tp is not None else round(signal.price * (1 - tp_pct), 6)
-        tp2 = round(signal.price * (1 - tp_pct * 2), 6)
-        tp3 = round(signal.price * (1 - tp_pct * 3), 6)
+        fb = FALLBACK_CONFIG.get(market, FALLBACK_CONFIG["forex"])
+        sl_pct = fb["sl_pct"] / 100
+        tp_pct = fb["tp_pct"] / 100
+        if signal.action == "BUY":
+            sl = signal.sl if signal.sl else round(signal.price * (1 - sl_pct), 6)
+            tp1 = signal.tp if signal.tp else round(signal.price * (1 + tp_pct), 6)
+            tp2 = round(signal.price * (1 + tp_pct * 2), 6)
+            tp3 = round(signal.price * (1 + tp_pct * 3), 6)
+        else:
+            sl = signal.sl if signal.sl else round(signal.price * (1 + sl_pct), 6)
+            tp1 = signal.tp if signal.tp else round(signal.price * (1 - tp_pct), 6)
+            tp2 = round(signal.price * (1 - tp_pct * 2), 6)
+            tp3 = round(signal.price * (1 - tp_pct * 3), 6)
 
     risk_per_unit = abs(signal.price - sl)
     reward_per_unit = abs(tp1 - signal.price)

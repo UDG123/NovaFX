@@ -43,6 +43,9 @@ class NovaFXCryptoStrategy(IStrategy):
         dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=self.ema_fast_period.value)
         dataframe["ema_slow"] = ta.EMA(dataframe, timeperiod=self.ema_slow_period.value)
 
+        dataframe["adx"] = ta.ADX(dataframe, timeperiod=14)
+        dataframe["atr"] = ta.ATR(dataframe, timeperiod=14)
+
         bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2.0, nbdevdn=2.0)
         dataframe["bb_upper"] = bollinger["upperband"]
         dataframe["bb_middle"] = bollinger["middleband"]
@@ -57,6 +60,8 @@ class NovaFXCryptoStrategy(IStrategy):
                 (dataframe["rsi"] < self.rsi_buy_threshold.value)
                 & (dataframe["ema_fast"] > dataframe["ema_slow"])
                 & (dataframe["close"] > dataframe["bb_lower"])
+                & (dataframe["adx"] > 20)
+                & (dataframe["volume"] > 0)
             ),
             "enter_long",
         ] = 1
