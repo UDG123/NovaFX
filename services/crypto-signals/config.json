@@ -8,18 +8,18 @@
     "fiat_display_currency": "USD",
     "timeframe": "1h",
     "exchange": {
-        "name": "binance",
+        "name": "kraken",
         "key": "",
         "secret": "",
         "pair_whitelist": [
-            "BTC/USDT",
-            "ETH/USDT",
-            "SOL/USDT",
-            "XRP/USDT",
-            "ADA/USDT",
-            "AVAX/USDT",
-            "DOGE/USDT",
-            "LINK/USDT"
+            "BTC/USD",
+            "ETH/USD",
+            "SOL/USD",
+            "XRP/USD",
+            "ADA/USD",
+            "AVAX/USD",
+            "DOGE/USD",
+            "LINK/USD"
         ],
         "pair_blacklist": []
     },
