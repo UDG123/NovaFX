@@ -291,29 +291,28 @@ ALL_STRATEGIES = [
 # ═══════════════════════════════════════════════════════════════════════
 
 REGIME_ALLOWED = {
-    "trending": {"ema_cross", "macd_zero"},
-    "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
-    "ranging": set(),
+    "trending": {"ema_cross", "macd_zero", "rsi_divergence"},
+    "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence", "ema_cross", "macd_zero"},
+    "ranging": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
 }
 
 
 def detect_regime(df: pd.DataFrame) -> str:
-    """ADX + BB Width regime detection."""
+    """ADX-based regime detection with loosened thresholds."""
     if len(df) < 50:
-        return "ranging"
+        return "mean_reverting"
     adx_val = calc_adx(df["high"], df["low"], df["close"]).iloc[-1]
     if np.isnan(adx_val):
-        return "ranging"
-    _, _, _, bw = calc_bollinger(df["close"])
-    bw_clean = bw.dropna()
-    if len(bw_clean) == 0:
-        return "ranging"
-    bbw_pct = (bw_clean < bw_clean.iloc[-1]).sum() / len(bw_clean) * 100
-    if adx_val > 25 and bbw_pct > 50:
-        return "trending"
-    if adx_val < 20 and bbw_pct < 30:
         return "mean_reverting"
-    return "ranging"
+    if adx_val > 15:
+        return "trending"
+    if adx_val < 12:
+        return "mean_reverting"
+    # ADX 12-15: use Hurst as tiebreaker
+    h = calc_hurst(df["close"])
+    if h > 0.55:
+        return "trending"
+    return "mean_reverting"
 
 
 def is_choppy(df: pd.DataFrame) -> bool:
@@ -489,9 +488,9 @@ def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: Asse
         # Confluence
         buys = [x for x in filtered if x[1] == "BUY"]
         sells = [x for x in filtered if x[1] == "SELL"]
-        if len(buys) >= 2:
+        if len(buys) >= 1:
             direction = "BUY"
-        elif len(sells) >= 2:
+        elif len(sells) >= 1:
             direction = "SELL"
         else:
             stats.no_conf += len(filtered)
