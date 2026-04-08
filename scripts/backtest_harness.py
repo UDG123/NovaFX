@@ -291,7 +291,7 @@ ALL_STRATEGIES = [
 # ═══════════════════════════════════════════════════════════════════════
 
 REGIME_ALLOWED = {
-    "trending": {"ema_cross", "macd_zero", "rsi_divergence"},
+    "trending": {"ema_cross", "macd_zero", "rsi_divergence", "rsi_adaptive"},
     "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence", "ema_cross", "macd_zero"},
     "ranging": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
 }
@@ -341,15 +341,17 @@ def is_choppy(df: pd.DataFrame) -> bool:
     return count >= 2
 
 
-def check_volume(df: pd.DataFrame, lookback: int = 20) -> bool:
-    """Volume must be >= average of last 20 bars."""
+def check_volume(df: pd.DataFrame, lookback: int = 20, asset_class: str = "forex") -> bool:
+    """Volume filter with per-asset thresholds."""
     if "volume" not in df.columns or len(df) < lookback + 1:
         return True
     vols = df["volume"].tail(lookback + 1)
     avg = vols.iloc[:-1].mean()
     if avg == 0:
         return True
-    return vols.iloc[-1] >= avg
+    thresholds = {"forex": 1.2, "stock": 1.0, "crypto": 1.1, "commodities": 1.2}
+    mult = thresholds.get(asset_class, 1.0)
+    return vols.iloc[-1] >= avg * mult
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -481,7 +483,7 @@ def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: Asse
             continue
 
         # Volume filter
-        if not check_volume(window):
+        if not check_volume(window, asset_class=asset_class):
             stats.volume_f += len(filtered)
             continue
 
