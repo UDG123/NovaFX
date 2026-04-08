@@ -287,12 +287,102 @@ def strat_rsi_divergence(df: pd.DataFrame) -> str | None:
     return None
 
 
+def strat_momentum_breakout(df: pd.DataFrame) -> str | None:
+    """Momentum breakout: price breaks 20-bar high/low with trend + RSI confirmation."""
+    if len(df) < 50:
+        return None
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    price = close.iloc[-1]
+
+    # 20-bar channel (excluding current bar)
+    high_20 = high.iloc[-21:-1].max()
+    low_20 = low.iloc[-21:-1].min()
+    if np.isnan(high_20) or np.isnan(low_20):
+        return None
+
+    # Trend filter: EMA20 vs EMA50
+    ema20 = calc_ema(close, 20).iloc[-1]
+    ema50 = calc_ema(close, 50).iloc[-1]
+    if np.isnan(ema20) or np.isnan(ema50):
+        return None
+
+    # RSI filter: avoid overbought breakout buys / oversold breakout sells
+    rsi = calc_rsi(close).iloc[-1]
+    if np.isnan(rsi):
+        return None
+
+    # BUY: close above 20-bar high, uptrend, RSI not extreme overbought
+    if price > high_20 and ema20 > ema50 and rsi < 80:
+        return "BUY"
+    # SELL: close below 20-bar low, downtrend, RSI not extreme oversold
+    if price < low_20 and ema20 < ema50 and rsi > 20:
+        return "SELL"
+    return None
+
+
+def strat_donchian_breakout(df: pd.DataFrame) -> str | None:
+    """Donchian channel breakout: close above/below 20-bar high/low."""
+    if len(df) < 25:
+        return None
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    price = close.iloc[-1]
+
+    # Entry channel: 20-bar (excluding current bar)
+    entry_high = high.iloc[-21:-1].max()
+    entry_low = low.iloc[-21:-1].min()
+    if np.isnan(entry_high) or np.isnan(entry_low):
+        return None
+
+    # Require channel width > 0.2% to avoid noise breakouts
+    channel_width = (entry_high - entry_low) / entry_low if entry_low > 0 else 0
+    if channel_width < 0.002:
+        return None
+
+    # BUY on upper breakout, SELL on lower breakout
+    if price > entry_high:
+        return "BUY"
+    if price < entry_low:
+        return "SELL"
+    return None
+
+
+def strat_macd_trend(df: pd.DataFrame) -> str | None:
+    """MACD crossover with SMA50 trend filter (no zero-line requirement)."""
+    if len(df) < 50:
+        return None
+    ml, sl, _ = calc_macd(df["close"])
+    pm, cm = ml.iloc[-2], ml.iloc[-1]
+    ps, cs = sl.iloc[-2], sl.iloc[-1]
+    if any(np.isnan(v) for v in [pm, cm, ps, cs]):
+        return None
+
+    sma50 = df["close"].rolling(50).mean().iloc[-1]
+    price = df["close"].iloc[-1]
+    if np.isnan(sma50):
+        return None
+
+    # BUY: MACD crosses above signal AND price > SMA50
+    if pm <= ps and cm > cs and price > sma50:
+        return "BUY"
+    # SELL: MACD crosses below signal AND price < SMA50
+    if pm >= ps and cm < cs and price < sma50:
+        return "SELL"
+    return None
+
+
 ALL_STRATEGIES = [
     ("ema_cross", strat_ema_cross),
     ("rsi_adaptive", strat_rsi_adaptive),
     ("macd_zero", strat_macd_zero),
     ("bb_reversion", strat_bb_reversion),
     ("rsi_divergence", strat_rsi_divergence),
+    ("momentum_breakout", strat_momentum_breakout),
+    ("donchian_breakout", strat_donchian_breakout),
+    ("macd_trend", strat_macd_trend),
 ]
 
 
@@ -301,7 +391,7 @@ ALL_STRATEGIES = [
 # ═══════════════════════════════════════════════════════════════════════
 
 REGIME_ALLOWED = {
-    "trending": {"ema_cross", "macd_zero", "rsi_adaptive"},
+    "trending": {"ema_cross", "macd_zero", "rsi_adaptive", "momentum_breakout", "donchian_breakout", "macd_trend"},
     "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence", "ema_cross", "macd_zero"},
     "ranging": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
 }

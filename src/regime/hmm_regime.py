@@ -27,8 +27,8 @@ RegimeLabel = Literal["bull", "bear", "ranging"]
 
 # Strategy gating per HMM regime
 HMM_REGIME_ALLOWED = {
-    "bull": {"ema_cross", "macd_zero", "rsi_adaptive"},
-    "bear": {"ema_cross", "macd_zero", "rsi_adaptive"},
+    "bull": {"ema_cross", "macd_zero", "rsi_adaptive", "momentum_breakout", "donchian_breakout", "macd_trend"},
+    "bear": {"ema_cross", "macd_zero", "rsi_adaptive", "momentum_breakout", "donchian_breakout", "macd_trend"},
     "ranging": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
 }
 

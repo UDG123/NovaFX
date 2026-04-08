@@ -121,7 +121,7 @@ def detect_regime(df: pd.DataFrame, lookback: int = 100) -> RegimeType:
 
 
 REGIME_STRATEGY_MAP = {
-    "trending": {"EMA 9/21 Cross", "MACD Cross"},
+    "trending": {"EMA 9/21 Cross", "MACD Cross", "Momentum Breakout", "Donchian Breakout", "MACD Trend"},
     "mean_reverting": {"RSI 14 Reversal", "BB Reversion", "RSI Divergence"},
     "ranging": set(),
 }

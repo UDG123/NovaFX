@@ -275,12 +275,116 @@ def strategy_rsi_divergence(df: pd.DataFrame, symbol: str) -> Optional[IncomingS
     return None
 
 
+def strategy_momentum_breakout(df: pd.DataFrame, symbol: str) -> Optional[IncomingSignal]:
+    """Price breaks above/below 20-bar high/low with EMA trend + RSI confirmation."""
+    if len(df) < 50:
+        return None
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    price = float(close.iloc[-1])
+
+    high_20 = float(high.iloc[-21:-1].max())
+    low_20 = float(low.iloc[-21:-1].min())
+    if any(np.isnan(v) for v in [high_20, low_20]):
+        return None
+
+    ema20 = EMAIndicator(close=close, window=20).ema_indicator().iloc[-1]
+    ema50 = EMAIndicator(close=close, window=50).ema_indicator().iloc[-1] if len(df) >= 50 else ema20
+    if any(np.isnan(v) for v in [ema20, ema50]):
+        return None
+
+    rsi = RSIIndicator(close=close, window=14).rsi().iloc[-1]
+    if np.isnan(rsi):
+        return None
+
+    if price > high_20 and ema20 > ema50 and rsi < 80:
+        action = "BUY"
+    elif price < low_20 and ema20 < ema50 and rsi > 20:
+        action = "SELL"
+    else:
+        return None
+
+    return IncomingSignal(
+        symbol=symbol, action=action, price=price,
+        timeframe="15m", source="signal_engine",
+        indicator=f"Momentum Breakout (RSI={rsi:.1f})",
+    )
+
+
+def strategy_donchian_breakout(df: pd.DataFrame, symbol: str) -> Optional[IncomingSignal]:
+    """Donchian channel breakout: close above 20-bar high or below 20-bar low."""
+    if len(df) < 25:
+        return None
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    price = float(close.iloc[-1])
+
+    entry_high = float(high.iloc[-21:-1].max())
+    entry_low = float(low.iloc[-21:-1].min())
+    if any(np.isnan(v) for v in [entry_high, entry_low]):
+        return None
+
+    channel_width = (entry_high - entry_low) / entry_low if entry_low > 0 else 0
+    if channel_width < 0.002:
+        return None
+
+    if price > entry_high:
+        action = "BUY"
+    elif price < entry_low:
+        action = "SELL"
+    else:
+        return None
+
+    return IncomingSignal(
+        symbol=symbol, action=action, price=price,
+        timeframe="15m", source="signal_engine",
+        indicator=f"Donchian Breakout ({entry_low:.5g}-{entry_high:.5g})",
+    )
+
+
+def strategy_macd_trend(df: pd.DataFrame, symbol: str) -> Optional[IncomingSignal]:
+    """MACD crossover with SMA50 trend filter (no zero-line requirement)."""
+    if len(df) < 50:
+        return None
+    macd_ind = MACD(close=df["close"])
+    macd_line = macd_ind.macd()
+    signal_line = macd_ind.macd_signal()
+
+    pm, cm = macd_line.iloc[-2], macd_line.iloc[-1]
+    ps, cs = signal_line.iloc[-2], signal_line.iloc[-1]
+    if any(np.isnan(v) for v in [pm, cm, ps, cs]):
+        return None
+
+    sma50 = df["close"].rolling(50).mean().iloc[-1]
+    price = float(df["close"].iloc[-1])
+    if np.isnan(sma50):
+        return None
+
+    if pm <= ps and cm > cs and price > sma50:
+        action = "BUY"
+    elif pm >= ps and cm < cs and price < sma50:
+        action = "SELL"
+    else:
+        return None
+
+    return IncomingSignal(
+        symbol=symbol, action=action, price=price,
+        timeframe="15m", source="signal_engine",
+        indicator="MACD Trend",
+    )
+
+
 STRATEGIES = [
     strategy_ema_cross,
     strategy_rsi_extreme,
     strategy_macd_cross,
     strategy_bollinger_reversion,
     strategy_rsi_divergence,
+    strategy_momentum_breakout,
+    strategy_donchian_breakout,
+    strategy_macd_trend,
 ]
 
 MIN_CONFLUENCE = 2
