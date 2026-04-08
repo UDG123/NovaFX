@@ -19,7 +19,8 @@ from scripts.backtest_harness import (
     ALL_STRATEGIES, REGIME_ALLOWED, ATR_MULT, PCT_FALLBACK,
     detect_regime, is_choppy, check_volume,
 )
-from src.execution.slippage_model import SlippageModel, SlippageStats, fix_forex_volume
+from src.execution.slippage_model import SlippageModel, SlippageStats
+from src.execution.volume_handler import VolumeHandler, normalize_volume
 
 SYMBOLS = {
     "crypto": {
@@ -153,10 +154,11 @@ def run_backtest(df: pd.DataFrame, asset_class: str, symbol: str,
 
         # Apply slippage
         if use_slippage and slip_model is not None:
-            # Use fix_forex_volume to get reliable volume across all asset types
-            fixed_vol = fix_forex_volume(
-                df["volume"].iloc[max(0, current_bar - 20):current_bar],
-                df["close"].iloc[max(0, current_bar - 20):current_bar],
+            # Use VolumeHandler for reliable volume across all asset types
+            lookback = df.iloc[max(0, current_bar - 20):current_bar]
+            fixed_vol = normalize_volume(
+                lookback["volume"], lookback["close"],
+                lookback["high"], lookback["low"],
                 symbol,
             )
             avg_vol_usd = float(fixed_vol.mean()) * price

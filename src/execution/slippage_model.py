@@ -59,67 +59,37 @@ DEFAULT_TIME_ADJUSTMENTS = {
 }
 
 
-FOREX_CODES = ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SEK", "NOK"]
-
-# Default daily volumes for forex (very liquid)
-FOREX_DEFAULT_VOLUME_USD = {
-    "major": 50_000_000_000,   # EUR/USD, GBP/USD — $50B/day
-    "minor": 10_000_000_000,   # EUR/GBP, AUD/NZD — $10B/day
-    "exotic": 1_000_000_000,   # USD/TRY, USD/ZAR — $1B/day
-}
-
-FOREX_MAJORS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
-
-
-def is_forex(symbol: str) -> bool:
-    """Detect if symbol is a forex pair."""
-    s = symbol.upper().replace("-", "").replace("/", "").replace("_", "")
-    return sum(1 for c in FOREX_CODES if c in s) >= 2
+# Re-export from volume_handler for backward compatibility
+from src.execution.volume_handler import (
+    is_forex,
+    classify_asset,
+    get_default_volume,
+    normalize_volume as fix_forex_volume_series,
+    IMPACT_FLOOR,
+    IMPACT_CAP,
+)
 
 
 def get_forex_volume_usd(symbol: str, timeframe_hours: float = 1.0) -> float:
-    """Get reasonable forex volume estimate per bar.
-
-    Major pairs: $50B/day, minor: $10B/day, exotic: $1B/day.
-    Scaled to the requested timeframe.
-    """
-    s_clean = symbol.upper().replace("-", "").replace("/", "").replace("_", "").replace("=X", "")
-
-    if any(m in s_clean or s_clean in m for m in FOREX_MAJORS):
-        daily_vol = FOREX_DEFAULT_VOLUME_USD["major"]
-    elif any(c in symbol.upper() for c in ["EUR", "GBP", "USD", "JPY"]):
-        daily_vol = FOREX_DEFAULT_VOLUME_USD["minor"]
-    else:
-        daily_vol = FOREX_DEFAULT_VOLUME_USD["exotic"]
-
-    bars_per_day = 24.0 / timeframe_hours
-    return daily_vol / bars_per_day
+    """Get reasonable forex volume estimate per bar. Delegates to volume_handler."""
+    daily = get_default_volume(symbol)
+    return daily / (24.0 / timeframe_hours)
 
 
 def fix_forex_volume(volume: pd.Series, close: pd.Series, symbol: str) -> pd.Series:
-    """Replace unreliable Yahoo forex volume with synthetic estimate.
-
-    Non-forex: clamp raw volume to min 1000.
-    Forex: use get_forex_volume_usd() scaled by close price.
-    """
+    """Replace unreliable Yahoo forex volume with synthetic estimate."""
     if not is_forex(symbol):
         return volume.clip(lower=1000)
-
     hourly_usd = get_forex_volume_usd(symbol, timeframe_hours=1.0)
     return (hourly_usd / close).clip(lower=1000)
 
 
 def safe_market_impact(trade_size: float, avg_volume_usd: float) -> float:
-    """Square-root market impact with floor/cap.
-
-    Returns impact as decimal fraction.
-    Floor: 0.1 bps (0.00001), Cap: 50 bps (0.005).
-    Volume floor: $1M to prevent blowups on thin data.
-    """
+    """Square-root market impact with floor/cap."""
     avg_volume_usd = max(avg_volume_usd, 1_000_000)
     participation = trade_size / avg_volume_usd
     impact = 0.1 * math.sqrt(participation)
-    return max(0.00001, min(0.005, impact))
+    return max(IMPACT_FLOOR, min(0.005, impact))
 
 
 @dataclass
