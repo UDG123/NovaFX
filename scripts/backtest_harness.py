@@ -386,6 +386,17 @@ ALL_STRATEGIES = [
 ]
 
 
+def run_strategy_class(name: str, data: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
+    """Run a strategy using the src/strategies registry (class-based).
+
+    Bridge between the inline backtest harness and the modular strategy classes.
+    Returns the signal DataFrame from BaseStrategy.generate_signals().
+    """
+    from src.strategies import get_strategy
+    strategy = get_strategy(name, params=params)
+    return strategy.generate_signals(data)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # SECTION 4 — Filters (regime, chop, volume, confluence)
 # ═══════════════════════════════════════════════════════════════════════

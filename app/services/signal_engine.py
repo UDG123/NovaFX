@@ -387,6 +387,19 @@ STRATEGIES = [
     strategy_macd_trend,
 ]
 
+# Strategy registry bridge — modular classes at src/strategies/
+# Maps live function names to registry names for future migration
+STRATEGY_REGISTRY_MAP = {
+    "strategy_ema_cross": "ema_cross",
+    "strategy_rsi_extreme": "rsi_adaptive",
+    "strategy_macd_cross": "macd_zero",
+    "strategy_bollinger_reversion": "bb_reversion",
+    "strategy_rsi_divergence": "rsi_divergence",
+    "strategy_momentum_breakout": "momentum_breakout",
+    "strategy_donchian_breakout": "donchian_breakout",
+    "strategy_macd_trend": "macd_trend",
+}
+
 MIN_CONFLUENCE = 2
 COOLDOWN_SECONDS = 3600
 
