@@ -105,18 +105,21 @@ def run_symbol(nova_sym, yf_ticker, ac):
             r.choppy_f += len(filtered)
             continue
 
-        if not check_volume(window):
+        if not check_volume(window, asset_class=ac):
             r.volume_f += len(filtered)
             continue
 
+        # Prefer non-divergence strategies when both fire
         buys = [x for x in filtered if x[1] == "BUY"]
         sells = [x for x in filtered if x[1] == "SELL"]
         if len(buys) >= 1:
             direction = "BUY"
-            strat_name = buys[0][0]
+            non_div = [x for x in buys if x[0] != "rsi_divergence"]
+            strat_name = non_div[0][0] if non_div else buys[0][0]
         elif len(sells) >= 1:
             direction = "SELL"
-            strat_name = sells[0][0]
+            non_div = [x for x in sells if x[0] != "rsi_divergence"]
+            strat_name = non_div[0][0] if non_div else sells[0][0]
         else:
             continue
 
