@@ -19,7 +19,7 @@ from scripts.backtest_harness import (
     ALL_STRATEGIES, REGIME_ALLOWED, ATR_MULT, PCT_FALLBACK,
     detect_regime, is_choppy, check_volume,
 )
-from src.execution.slippage_model import SlippageModel, SlippageStats
+from src.execution.slippage_model import SlippageModel, SlippageStats, fix_forex_volume
 
 SYMBOLS = {
     "crypto": {
@@ -153,16 +153,13 @@ def run_backtest(df: pd.DataFrame, asset_class: str, symbol: str,
 
         # Apply slippage
         if use_slippage and slip_model is not None:
-            # Estimate volume: use raw volume * price for dollar volume
-            raw_vol = float(V[max(0, current_bar - 20):current_bar].mean())
-            if raw_vol > 0 and asset_class != "forex":
-                avg_vol_usd = raw_vol * price
-            else:
-                # Forex volume from Yahoo is unreliable; use realistic defaults
-                forex_daily_vol = {"EURUSD": 5e11, "GBPUSD": 3e11, "USDJPY": 4e11,
-                                   "AUDUSD": 2e11, "USDCAD": 2e11, "USDCHF": 1e11,
-                                   "NZDUSD": 1e11, "EURGBP": 1e11}
-                avg_vol_usd = forex_daily_vol.get(symbol, 1e11) / 24  # Hourly
+            # Use fix_forex_volume to get reliable volume across all asset types
+            fixed_vol = fix_forex_volume(
+                df["volume"].iloc[max(0, current_bar - 20):current_bar],
+                df["close"].iloc[max(0, current_bar - 20):current_bar],
+                symbol,
+            )
+            avg_vol_usd = float(fixed_vol.mean()) * price
             vol = float(atr_val / price) if atr_ok else 0.01
 
             # Get hour

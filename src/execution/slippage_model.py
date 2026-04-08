@@ -6,11 +6,15 @@ Models 4 components of execution cost:
   2. Volatility adjustment (higher vol = wider spread)
   3. Market impact (square-root model of trade size vs volume)
   4. Time-of-day adjustment (session-dependent spread widening)
+
+Includes forex volume synthesis (Yahoo forex volume is unreliable)
+and clamped market impact to prevent blowups on thin data.
 """
 import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import pandas as pd
 
 # Base spreads in basis points per asset
 BASE_SPREADS_BPS = {
@@ -53,6 +57,37 @@ DEFAULT_TIME_ADJUSTMENTS = {
     18: 1.2, 19: 1.0, 20: 1.0, 21: 0.9,          # NY wind-down
     22: 0.9, 23: 0.8,                             # Transition
 }
+
+
+FOREX_CODES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD"}
+
+
+def fix_forex_volume(volume: pd.Series, close: pd.Series, symbol: str) -> pd.Series:
+    """Replace unreliable Yahoo forex volume with synthetic estimate.
+
+    Non-forex: clamp raw volume to min 1000.
+    Forex: synthesize from ~$2B daily / 24h, scaled by close price.
+    """
+    sym_upper = symbol.upper().replace("-", "").replace("/", "").replace("=X", "")
+    fx_hits = sum(1 for c in FOREX_CODES if c in sym_upper)
+    is_fx = fx_hits >= 2
+
+    if not is_fx:
+        return volume.clip(lower=1000)
+
+    base_vol = 2_000_000_000 / 24  # ~$83M per hour
+    return (base_vol / close).clip(lower=1000)
+
+
+def safe_market_impact(trade_size: float, volume: float, close: float) -> float:
+    """Square-root market impact with floor/cap.
+
+    Returns impact as decimal fraction (0.001 = 10 bps).
+    Floor: 0.1 bps (0.00001), Cap: 100 bps (0.01).
+    """
+    vol_usd = max(volume * close, 10_000_000)  # $10M floor
+    impact = 0.1 * math.sqrt(trade_size / vol_usd)
+    return max(0.00001, min(0.01, impact))
 
 
 @dataclass
@@ -131,13 +166,12 @@ class SlippageModel:
         vol_mult = math.sqrt(max(volatility, 0.001) / 0.01)
         vol_component = spread * (vol_mult - 1) * 0.5
 
-        # 3. Market impact: square-root model
-        # impact = coefficient * sqrt(trade_size / avg_volume)
+        # 3. Market impact: clamped square-root model
         if avg_volume_usd > 0:
-            participation = trade_size_usd / avg_volume_usd
-            impact = self.impact_coefficient * math.sqrt(participation) / 10000
+            # safe_market_impact returns decimal with floor/cap
+            impact = safe_market_impact(trade_size_usd, avg_volume_usd, 1.0)
         else:
-            impact = 0.0
+            impact = 0.00001  # Minimum floor
 
         # 4. Time-of-day adjustment
         if hour_utc is not None:
