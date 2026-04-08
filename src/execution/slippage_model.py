@@ -59,35 +59,67 @@ DEFAULT_TIME_ADJUSTMENTS = {
 }
 
 
-FOREX_CODES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD"}
+FOREX_CODES = ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SEK", "NOK"]
+
+# Default daily volumes for forex (very liquid)
+FOREX_DEFAULT_VOLUME_USD = {
+    "major": 50_000_000_000,   # EUR/USD, GBP/USD — $50B/day
+    "minor": 10_000_000_000,   # EUR/GBP, AUD/NZD — $10B/day
+    "exotic": 1_000_000_000,   # USD/TRY, USD/ZAR — $1B/day
+}
+
+FOREX_MAJORS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+
+
+def is_forex(symbol: str) -> bool:
+    """Detect if symbol is a forex pair."""
+    s = symbol.upper().replace("-", "").replace("/", "").replace("_", "")
+    return sum(1 for c in FOREX_CODES if c in s) >= 2
+
+
+def get_forex_volume_usd(symbol: str, timeframe_hours: float = 1.0) -> float:
+    """Get reasonable forex volume estimate per bar.
+
+    Major pairs: $50B/day, minor: $10B/day, exotic: $1B/day.
+    Scaled to the requested timeframe.
+    """
+    s_clean = symbol.upper().replace("-", "").replace("/", "").replace("_", "").replace("=X", "")
+
+    if any(m in s_clean or s_clean in m for m in FOREX_MAJORS):
+        daily_vol = FOREX_DEFAULT_VOLUME_USD["major"]
+    elif any(c in symbol.upper() for c in ["EUR", "GBP", "USD", "JPY"]):
+        daily_vol = FOREX_DEFAULT_VOLUME_USD["minor"]
+    else:
+        daily_vol = FOREX_DEFAULT_VOLUME_USD["exotic"]
+
+    bars_per_day = 24.0 / timeframe_hours
+    return daily_vol / bars_per_day
 
 
 def fix_forex_volume(volume: pd.Series, close: pd.Series, symbol: str) -> pd.Series:
     """Replace unreliable Yahoo forex volume with synthetic estimate.
 
     Non-forex: clamp raw volume to min 1000.
-    Forex: synthesize from ~$2B daily / 24h, scaled by close price.
+    Forex: use get_forex_volume_usd() scaled by close price.
     """
-    sym_upper = symbol.upper().replace("-", "").replace("/", "").replace("=X", "")
-    fx_hits = sum(1 for c in FOREX_CODES if c in sym_upper)
-    is_fx = fx_hits >= 2
-
-    if not is_fx:
+    if not is_forex(symbol):
         return volume.clip(lower=1000)
 
-    base_vol = 2_000_000_000 / 24  # ~$83M per hour
-    return (base_vol / close).clip(lower=1000)
+    hourly_usd = get_forex_volume_usd(symbol, timeframe_hours=1.0)
+    return (hourly_usd / close).clip(lower=1000)
 
 
-def safe_market_impact(trade_size: float, volume: float, close: float) -> float:
+def safe_market_impact(trade_size: float, avg_volume_usd: float) -> float:
     """Square-root market impact with floor/cap.
 
-    Returns impact as decimal fraction (0.001 = 10 bps).
-    Floor: 0.1 bps (0.00001), Cap: 100 bps (0.01).
+    Returns impact as decimal fraction.
+    Floor: 0.1 bps (0.00001), Cap: 50 bps (0.005).
+    Volume floor: $1M to prevent blowups on thin data.
     """
-    vol_usd = max(volume * close, 10_000_000)  # $10M floor
-    impact = 0.1 * math.sqrt(trade_size / vol_usd)
-    return max(0.00001, min(0.01, impact))
+    avg_volume_usd = max(avg_volume_usd, 1_000_000)
+    participation = trade_size / avg_volume_usd
+    impact = 0.1 * math.sqrt(participation)
+    return max(0.00001, min(0.005, impact))
 
 
 @dataclass
@@ -153,44 +185,61 @@ class SlippageModel:
                            avg_volume_usd: float = 1e8,
                            volatility: float = 0.01,
                            hour_utc: int | None = None,
-                           direction: str = "BUY") -> tuple[float, SlippageRecord]:
+                           direction: str = "BUY",
+                           symbol: str | None = None) -> tuple[float, SlippageRecord]:
         """Calculate slippage as decimal fraction (0.001 = 0.1%).
+
+        Uses multiplicative model: (spread + impact) * vol_adj * time_adj.
+        Forex volumes auto-corrected via get_forex_volume_usd().
+        Final clamp for forex: 0.5-10 pips (0.00005 - 0.001).
 
         Returns (slippage_decimal, SlippageRecord).
         """
-        # 1. Base spread: half-spread cost (we cross the spread)
-        spread = self.base_spread_bps / 10000 / 2
+        sym = symbol or self.symbol
 
-        # 2. Volatility adjustment: higher vol widens effective spread
-        # Normalize: 1% vol = 1x, 2% vol = 1.4x, 3% vol = 1.7x
-        vol_mult = math.sqrt(max(volatility, 0.001) / 0.01)
-        vol_component = spread * (vol_mult - 1) * 0.5
+        # Forex fix: override broken Yahoo volume with realistic estimate
+        if sym and is_forex(sym):
+            avg_volume_usd = get_forex_volume_usd(sym, timeframe_hours=1.0)
 
-        # 3. Market impact: clamped square-root model
-        if avg_volume_usd > 0:
-            # safe_market_impact returns decimal with floor/cap
-            impact = safe_market_impact(trade_size_usd, avg_volume_usd, 1.0)
-        else:
-            impact = 0.00001  # Minimum floor
+        # Clamp minimum volume to prevent blowup
+        avg_volume_usd = max(avg_volume_usd, 1_000_000)
 
-        # 4. Time-of-day adjustment
+        # 1. Base spread (full spread in decimal)
+        spread = self.base_spread_bps / 10000
+
+        # 2. Market impact: clamped square-root model
+        impact = safe_market_impact(trade_size_usd, avg_volume_usd)
+
+        # 3. Volatility adjustment (multiplicative)
+        vol_adjustment = 1.0 + max(volatility, 0.0) * 5
+
+        # 4. Time-of-day adjustment (multiplicative)
         if hour_utc is not None:
-            time_mult = self.time_adjustments.get(hour_utc, 1.0)
+            tod_mult = self.time_adjustments.get(hour_utc, 1.0)
         else:
-            time_mult = 1.0
-        time_component = spread * (time_mult - 1)
+            tod_mult = 1.0
 
-        total_slippage = spread + vol_component + impact + time_component
-        total_slippage = max(0.0, total_slippage)
+        # Total slippage: multiplicative model
+        total_slippage = (spread + impact) * vol_adjustment * tod_mult
+
+        # Final forex clamp: 0.5 - 10 pips (0.00005 - 0.001)
+        if sym and is_forex(sym):
+            total_slippage = max(0.00005, min(0.001, total_slippage))
+
+        # Decompose for logging
+        spread_part = spread * vol_adjustment * tod_mult
+        impact_part = impact * vol_adjustment * tod_mult
+        vol_part = (spread + impact) * (vol_adjustment - 1.0) * tod_mult
+        time_part = (spread + impact) * vol_adjustment * (tod_mult - 1.0) if tod_mult != 1.0 else 0.0
 
         record = SlippageRecord(
             intended_price=0.0,  # Filled by apply_slippage
             actual_price=0.0,
             slippage_pct=total_slippage * 100,
-            spread_component=spread * 100,
-            volatility_component=vol_component * 100,
-            impact_component=impact * 100,
-            time_component=time_component * 100,
+            spread_component=spread_part * 100,
+            volatility_component=vol_part * 100,
+            impact_component=impact_part * 100,
+            time_component=time_part * 100,
             direction=direction,
         )
 
@@ -220,10 +269,12 @@ class SlippageModel:
                             trade_size_usd: float = 1000.0,
                             avg_volume_usd: float = 1e8,
                             volatility: float = 0.01,
-                            hour_utc: int | None = None) -> tuple[float, SlippageRecord]:
+                            hour_utc: int | None = None,
+                            symbol: str | None = None) -> tuple[float, SlippageRecord]:
         """Convenience: calculate slippage and apply in one call."""
         slippage, record = self.calculate_slippage(
-            trade_size_usd, avg_volume_usd, volatility, hour_utc, direction
+            trade_size_usd, avg_volume_usd, volatility, hour_utc, direction,
+            symbol=symbol,
         )
         actual = self.apply_slippage(entry_price, direction, slippage, record, hour_utc)
         return actual, record

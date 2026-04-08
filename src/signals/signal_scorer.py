@@ -8,9 +8,12 @@ Supports:
   - Per-factor weights (default + per-asset/per-strategy overrides)
   - Confidence-based position sizing (higher confidence = larger position)
   - Adaptive weight learning from trade outcomes
+  - Weight persistence to JSON for production use
 """
+import json
 import logging
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,12 +21,22 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {
-    "trend_strength": 0.25,     # How strong is the EMA trend (slope, not just cross)
-    "momentum_confirm": 0.20,   # RSI in favorable zone for direction
-    "vol_surge": 0.15,          # Volume spike above average (higher = better)
-    "atr_percentile": 0.15,     # ATR relative to its own history (mid-range best)
-    "multi_strat_agree": 0.15,  # How many strategies agree on direction
-    "time_filter": 0.10,        # Not in high-noise window
+    "trend_strength": 0.25,
+    "momentum_confirm": 0.20,
+    "vol_surge": 0.15,
+    "atr_percentile": 0.15,
+    "multi_strat_agree": 0.15,
+    "time_filter": 0.10,
+}
+
+# Weights learned from backtest optimization (backtest_scored.py results)
+LEARNED_WEIGHTS = {
+    "trend_strength": 0.24,
+    "momentum_confirm": 0.20,
+    "vol_surge": 0.13,
+    "atr_percentile": 0.15,
+    "multi_strat_agree": 0.18,
+    "time_filter": 0.10,
 }
 
 # Hours considered high-noise (NY open volatility spike)
@@ -306,3 +319,24 @@ class SignalScorer:
             self.weights = {k: v / total for k, v in self.weights.items()}
 
         logger.info("Weights updated: %s", {k: round(v, 3) for k, v in self.weights.items()})
+
+    def save_weights(self, filepath: str = "config/signal_weights.json") -> Path:
+        """Persist current weights to JSON for production use."""
+        p = Path(filepath)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(self.weights, f, indent=2)
+        logger.info("Weights saved to %s", p)
+        return p
+
+    def load_weights(self, filepath: str = "config/signal_weights.json") -> bool:
+        """Load weights from JSON. Returns True if loaded, False if file missing."""
+        p = Path(filepath)
+        if not p.exists():
+            logger.warning("No weights file at %s, using defaults", p)
+            return False
+        with open(p) as f:
+            loaded = json.load(f)
+        self.weights = loaded
+        logger.info("Weights loaded from %s: %s", p, self.weights)
+        return True
