@@ -71,7 +71,14 @@ def run_diagnostic(name, ticker, ac):
     sell_wins = 0
     sell_losses = 0
 
+    last_signal_bar = -999  # Cooldown: min 16 bars between signals
+    trend_blocked = 0
+
     for start in range(0, len(df) - W - 20, 4):
+        current_bar = start + W - 1
+        if current_bar - last_signal_bar < 16:
+            continue
+
         window = df.iloc[start:start + W].copy().reset_index(drop=True)
 
         # Collect ATR as % of price at every window
@@ -128,6 +135,17 @@ def run_diagnostic(name, ticker, ac):
         else:
             continue
 
+        # Trend alignment gate: reject BUY if EMA20 < EMA50, SELL if EMA20 > EMA50
+        ema20 = calc_ema(window["close"], 20).iloc[-1]
+        ema50 = calc_ema(window["close"], 50).iloc[-1] if len(window) >= 50 else ema20
+        if not (np.isnan(ema20) or np.isnan(ema50)):
+            if direction == "BUY" and ema20 < ema50:
+                trend_blocked += 1
+                continue
+            if direction == "SELL" and ema20 > ema50:
+                trend_blocked += 1
+                continue
+
         # Record strategy direction
         strat_directions[strat_name][direction] += 1
 
@@ -147,6 +165,7 @@ def run_diagnostic(name, ticker, ac):
 
         total_emitted += 1
         strat_emit[strat_name] += 1
+        last_signal_bar = current_bar
 
         # Record signal hour
         ts_idx = start + W - 1
@@ -206,6 +225,7 @@ def run_diagnostic(name, ticker, ac):
     print(f"    Regime blocked: {regime_blocked}")
     print(f"    Choppy blocked: {choppy_count}")
     print(f"    Volume blocked: {volume_blocked}")
+    print(f"    Trend gate blocked: {trend_blocked}")
 
     # 2. Strategy breakdown
     print(f"\n  2. STRATEGY BREAKDOWN (emitted signals)")

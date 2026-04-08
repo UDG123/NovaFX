@@ -250,7 +250,8 @@ def strat_bb_reversion(df: pd.DataFrame) -> str | None:
 
 
 def strat_rsi_divergence(df: pd.DataFrame) -> str | None:
-    """RSI divergence — price makes new extreme, RSI doesn't confirm."""
+    """RSI divergence — price makes new extreme, RSI doesn't confirm.
+    Includes SMA50 directional filter: only BUY below SMA50, only SELL above."""
     if len(df) < 50:
         return None
     r = calc_rsi(df["close"])
@@ -258,6 +259,13 @@ def strat_rsi_divergence(df: pd.DataFrame) -> str | None:
     rv = r.values
     if np.any(np.isnan(rv[-30:])):
         return None
+
+    # SMA50 trend gate for divergence direction
+    sma50 = df["close"].rolling(50).mean().iloc[-1]
+    price = c[-1]
+    if np.isnan(sma50):
+        return None
+
     w = c[-30:]
     rw = rv[-30:]
     lows, highs = [], []
@@ -266,11 +274,13 @@ def strat_rsi_divergence(df: pd.DataFrame) -> str | None:
             lows.append(i)
         if w[i] > w[i-1] and w[i] > w[i-2] and w[i] > w[i+1] and w[i] > w[i+2]:
             highs.append(i)
-    if len(lows) >= 2:
+    # Bullish divergence only when price is below SMA50 (oversold context)
+    if len(lows) >= 2 and price < sma50:
         i1, i2 = lows[-2], lows[-1]
         if w[i2] < w[i1] and rw[i2] > rw[i1] and rw[i2] < 40:
             return "BUY"
-    if len(highs) >= 2:
+    # Bearish divergence only when price is above SMA50 (overbought context)
+    if len(highs) >= 2 and price > sma50:
         i1, i2 = highs[-2], highs[-1]
         if w[i2] > w[i1] and rw[i2] < rw[i1] and rw[i2] > 60:
             return "SELL"
@@ -291,7 +301,7 @@ ALL_STRATEGIES = [
 # ═══════════════════════════════════════════════════════════════════════
 
 REGIME_ALLOWED = {
-    "trending": {"ema_cross", "macd_zero", "rsi_divergence", "rsi_adaptive"},
+    "trending": {"ema_cross", "macd_zero", "rsi_adaptive"},
     "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence", "ema_cross", "macd_zero"},
     "ranging": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
 }
@@ -379,7 +389,7 @@ SYMBOLS = {
 
 ATR_MULT = {
     "forex": {"sl": 1.5, "tp": 2.0},
-    "crypto": {"sl": 2.0, "tp": 3.0},
+    "crypto": {"sl": 1.5, "tp": 3.5},
     "stocks": {"sl": 2.0, "tp": 3.0},
     "commodities": {"sl": 2.0, "tp": 3.0},
 }
@@ -449,8 +459,14 @@ def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: Asse
     L = df["low"].values.astype(float)
     C = df["close"].values.astype(float)
     tc = 0
+    last_signal_bar = -999  # Cooldown: min 16 bars (~16h) between signals
 
     for start in range(0, len(df) - W - 20, 4):
+        # Signal cooldown check
+        current_bar = start + W - 1
+        if current_bar - last_signal_bar < 16:
+            continue
+
         window = df.iloc[start:start + W].copy().reset_index(drop=True)
 
         # Run strategies
@@ -498,6 +514,17 @@ def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: Asse
             stats.no_conf += len(filtered)
             continue
 
+        # Trend alignment gate: reject BUY if EMA20 < EMA50, reject SELL if EMA20 > EMA50
+        ema20 = calc_ema(window["close"], 20).iloc[-1]
+        ema50 = calc_ema(window["close"], 50).iloc[-1] if len(window) >= 50 else ema20
+        if not (np.isnan(ema20) or np.isnan(ema50)):
+            if direction == "BUY" and ema20 < ema50:
+                stats.no_conf += len(filtered)
+                continue
+            if direction == "SELL" and ema20 > ema50:
+                stats.no_conf += len(filtered)
+                continue
+
         # Compute SL/TP
         price = C[start + W - 1]
         atr_val = calc_atr(window["high"], window["low"], window["close"]).iloc[-1]
@@ -519,6 +546,7 @@ def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: Asse
         tp1 = price + tp_d if direction == "BUY" else price - tp_d
 
         stats.emitted += 1
+        last_signal_bar = current_bar
 
         # Simulate trade
         idx = start + W - 1
