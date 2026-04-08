@@ -1,0 +1,8 @@
+{
+  "trend_strength": 0.24,
+  "momentum_confirm": 0.2,
+  "vol_surge": 0.13,
+  "atr_percentile": 0.15,
+  "multi_strat_agree": 0.18,
+  "time_filter": 0.1
+}

@@ -477,11 +477,14 @@ SYMBOLS = {
     },
 }
 
+# ATR multipliers — adjusted for slippage compensation (~16% R:R compression)
+# Crypto: wider TP to offset execution costs on lower-liquidity alts
+# Forex: tighter spreads need less compensation
 ATR_MULT = {
-    "forex": {"sl": 1.5, "tp": 2.0},
+    "forex": {"sl": 1.5, "tp": 3.0},
     "crypto": {"sl": 1.5, "tp": 3.5},
-    "stocks": {"sl": 2.0, "tp": 3.0},
-    "commodities": {"sl": 2.0, "tp": 3.0},
+    "stocks": {"sl": 2.0, "tp": 3.2},
+    "commodities": {"sl": 2.0, "tp": 3.2},
 }
 
 PCT_FALLBACK = {

@@ -5,12 +5,13 @@ from app.config import settings
 from app.models.signals import IncomingSignal, ProcessedSignal
 
 # ATR multipliers per asset class
+# ATR multipliers — adjusted for slippage compensation (~16% R:R compression)
 ATR_CONFIG = {
-    "forex": {"sl_mult": 1.5, "tp1_mult": 2.0, "tp2_mult": 3.0, "tp3_mult": 4.5},
-    "crypto": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 8.0},
-    "indices": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
-    "commodities": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
-    "stocks": {"sl_mult": 2.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": 7.0},
+    "forex": {"sl_mult": 1.5, "tp1_mult": 3.0, "tp2_mult": 4.5, "tp3_mult": 6.0},
+    "crypto": {"sl_mult": 1.5, "tp1_mult": 3.5, "tp2_mult": 5.5, "tp3_mult": 8.0},
+    "indices": {"sl_mult": 2.0, "tp1_mult": 3.2, "tp2_mult": 5.0, "tp3_mult": 7.0},
+    "commodities": {"sl_mult": 2.0, "tp1_mult": 3.2, "tp2_mult": 5.0, "tp3_mult": 7.0},
+    "stocks": {"sl_mult": 2.0, "tp1_mult": 3.2, "tp2_mult": 5.0, "tp3_mult": 7.0},
 }
 
 # Fallback percentages (only used if ATR unavailable)
