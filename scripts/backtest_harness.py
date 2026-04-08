@@ -6,6 +6,7 @@ Built with: httpx, numpy, pandas only. No ta, no yfinance.
 import httpx
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass, field
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -166,56 +167,490 @@ def calc_hurst(close: pd.Series, lags: int = 20) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# TEST SECTION 1 + 2
+# SECTION 3 — Strategies (replicating signal_engine.py from fc1986c)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def strat_ema_cross(df: pd.DataFrame) -> str | None:
+    """EMA 9/21 cross with slope confirmation."""
+    if len(df) < 30:
+        return None
+    e9 = calc_ema(df["close"], 9)
+    e21 = calc_ema(df["close"], 21)
+    pf, cf = e9.iloc[-2], e9.iloc[-1]
+    ps, cs = e21.iloc[-2], e21.iloc[-1]
+    if any(np.isnan(v) for v in [pf, cf, ps, cs]):
+        return None
+    slope = cs - e21.iloc[-3] if len(e21) >= 3 and not np.isnan(e21.iloc[-3]) else 0
+    if pf <= ps and cf > cs:
+        return "BUY" if slope >= 0 else None
+    if pf >= ps and cf < cs:
+        return "SELL" if slope <= 0 else None
+    return None
+
+
+def strat_rsi_adaptive(df: pd.DataFrame) -> str | None:
+    """RSI with adaptive thresholds based on SMA50 trend context."""
+    if len(df) < 50:
+        return None
+    r = calc_rsi(df["close"])
+    val = r.iloc[-1]
+    if np.isnan(val):
+        return None
+    sma50 = df["close"].rolling(50).mean().iloc[-1]
+    price = df["close"].iloc[-1]
+    if np.isnan(sma50):
+        bt, st = 30, 70
+    elif price > sma50:
+        bt, st = 40, 80
+    else:
+        bt, st = 20, 60
+    if val < bt:
+        return "BUY"
+    if val > st:
+        return "SELL"
+    return None
+
+
+def strat_macd_zero(df: pd.DataFrame) -> str | None:
+    """MACD cross with zero-line filter."""
+    if len(df) < 50:
+        return None
+    ml, sl, _ = calc_macd(df["close"])
+    pm, cm = ml.iloc[-2], ml.iloc[-1]
+    ps, cs = sl.iloc[-2], sl.iloc[-1]
+    if any(np.isnan(v) for v in [pm, cm, ps, cs]):
+        return None
+    if pm <= ps and cm > cs:
+        return "BUY" if cm >= 0 else None
+    if pm >= ps and cm < cs:
+        return "SELL" if cm <= 0 else None
+    return None
+
+
+def strat_bb_reversion(df: pd.DataFrame) -> str | None:
+    """Bollinger Band reversion with trend gate."""
+    if len(df) < 30:
+        return None
+    u, m, l, bw = calc_bollinger(df["close"])
+    if any(np.isnan(v) for v in [u.iloc[-1], l.iloc[-1], m.iloc[-1]]):
+        return None
+    # Reject expanding bands
+    if len(df) >= 25 and not np.isnan(bw.iloc[-5]):
+        if bw.iloc[-1] > bw.iloc[-5] * 1.3:
+            return None
+        slope = abs(m.iloc[-1] - m.iloc[-5]) / m.iloc[-1] if m.iloc[-1] > 0 else 0
+        if slope > 0.005:
+            return None
+    if df["close"].iloc[-1] <= l.iloc[-1]:
+        return "BUY"
+    if df["close"].iloc[-1] >= u.iloc[-1]:
+        return "SELL"
+    return None
+
+
+def strat_rsi_divergence(df: pd.DataFrame) -> str | None:
+    """RSI divergence — price makes new extreme, RSI doesn't confirm."""
+    if len(df) < 50:
+        return None
+    r = calc_rsi(df["close"])
+    c = df["close"].values
+    rv = r.values
+    if np.any(np.isnan(rv[-30:])):
+        return None
+    w = c[-30:]
+    rw = rv[-30:]
+    lows, highs = [], []
+    for i in range(2, len(w) - 2):
+        if w[i] < w[i-1] and w[i] < w[i-2] and w[i] < w[i+1] and w[i] < w[i+2]:
+            lows.append(i)
+        if w[i] > w[i-1] and w[i] > w[i-2] and w[i] > w[i+1] and w[i] > w[i+2]:
+            highs.append(i)
+    if len(lows) >= 2:
+        i1, i2 = lows[-2], lows[-1]
+        if w[i2] < w[i1] and rw[i2] > rw[i1] and rw[i2] < 40:
+            return "BUY"
+    if len(highs) >= 2:
+        i1, i2 = highs[-2], highs[-1]
+        if w[i2] > w[i1] and rw[i2] < rw[i1] and rw[i2] > 60:
+            return "SELL"
+    return None
+
+
+ALL_STRATEGIES = [
+    ("ema_cross", strat_ema_cross),
+    ("rsi_adaptive", strat_rsi_adaptive),
+    ("macd_zero", strat_macd_zero),
+    ("bb_reversion", strat_bb_reversion),
+    ("rsi_divergence", strat_rsi_divergence),
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SECTION 4 — Filters (regime, chop, volume, confluence)
+# ═══════════════════════════════════════════════════════════════════════
+
+REGIME_ALLOWED = {
+    "trending": {"ema_cross", "macd_zero"},
+    "mean_reverting": {"rsi_adaptive", "bb_reversion", "rsi_divergence"},
+    "ranging": set(),
+}
+
+
+def detect_regime(df: pd.DataFrame) -> str:
+    """ADX + BB Width regime detection."""
+    if len(df) < 50:
+        return "ranging"
+    adx_val = calc_adx(df["high"], df["low"], df["close"]).iloc[-1]
+    if np.isnan(adx_val):
+        return "ranging"
+    _, _, _, bw = calc_bollinger(df["close"])
+    bw_clean = bw.dropna()
+    if len(bw_clean) == 0:
+        return "ranging"
+    bbw_pct = (bw_clean < bw_clean.iloc[-1]).sum() / len(bw_clean) * 100
+    if adx_val > 25 and bbw_pct > 50:
+        return "trending"
+    if adx_val < 20 and bbw_pct < 30:
+        return "mean_reverting"
+    return "ranging"
+
+
+def is_choppy(df: pd.DataFrame) -> bool:
+    """Composite chop detector: ADX + ATR percentile + BB width."""
+    if len(df) < 50:
+        return False
+    count = 0
+    # ADX < 20
+    adx_val = calc_adx(df["high"], df["low"], df["close"]).iloc[-1]
+    if not np.isnan(adx_val) and adx_val < 20:
+        count += 1
+    # ATR percentile
+    atr_series = calc_atr(df["high"], df["low"], df["close"])
+    atr_clean = atr_series.dropna()
+    if len(atr_clean) > 14:
+        pct = (atr_clean < atr_clean.iloc[-1]).sum() / len(atr_clean) * 100
+        if pct < 30:
+            count += 1
+    # BB width percentile
+    _, _, _, bw = calc_bollinger(df["close"])
+    bw_clean = bw.dropna()
+    if len(bw_clean) > 5:
+        bw_pct = (bw_clean < bw_clean.iloc[-1]).sum() / len(bw_clean)
+        if bw_pct < 0.25:
+            count += 1
+    return count >= 2
+
+
+def check_volume(df: pd.DataFrame, lookback: int = 20) -> bool:
+    """Volume must be >= average of last 20 bars."""
+    if "volume" not in df.columns or len(df) < lookback + 1:
+        return True
+    vols = df["volume"].tail(lookback + 1)
+    avg = vols.iloc[:-1].mean()
+    if avg == 0:
+        return True
+    return vols.iloc[-1] >= avg
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SECTION 5 — Backtest Runner
+# ═══════════════════════════════════════════════════════════════════════
+
+SYMBOLS = {
+    "forex": {
+        "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "JPY=X",
+        "AUDUSD": "AUDUSD=X", "USDCAD": "CAD=X", "USDCHF": "CHF=X",
+        "NZDUSD": "NZDUSD=X", "EURGBP": "EURGBP=X",
+    },
+    "stocks": {
+        "AAPL": "AAPL", "MSFT": "MSFT", "NVDA": "NVDA",
+        "TSLA": "TSLA", "SPY": "SPY", "QQQ": "QQQ",
+    },
+    "crypto": {
+        "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD",
+        "SOLUSDT": "SOL-USD", "XRPUSDT": "XRP-USD",
+    },
+    "commodities": {
+        "XAUUSD": "GC=F", "XAGUSD": "SI=F",
+    },
+}
+
+ATR_MULT = {
+    "forex": {"sl": 1.5, "tp": 2.0},
+    "crypto": {"sl": 2.0, "tp": 3.0},
+    "stocks": {"sl": 2.0, "tp": 3.0},
+    "commodities": {"sl": 2.0, "tp": 3.0},
+}
+
+PCT_FALLBACK = {
+    "forex": {"sl": 0.003, "tp": 0.006},
+    "crypto": {"sl": 0.015, "tp": 0.03},
+    "stocks": {"sl": 0.01, "tp": 0.02},
+    "commodities": {"sl": 0.008, "tp": 0.016},
+}
+
+
+@dataclass
+class AssetStats:
+    raw: int = 0
+    regime_f: int = 0
+    choppy_f: int = 0
+    volume_f: int = 0
+    no_conf: int = 0
+    emitted: int = 0
+    nans: int = 0
+    wins: int = 0
+    losses: int = 0
+    opens: int = 0
+    pnl: float = 0.0
+    win_pnls: list = field(default_factory=list)
+    loss_pnls: list = field(default_factory=list)
+    atr_sls: list = field(default_factory=list)
+    regimes: dict = field(default_factory=lambda: {"trending": 0, "mean_reverting": 0, "ranging": 0})
+    strats: dict = field(default_factory=dict)
+    atr_n: int = 0
+
+
+def simulate_trade(highs, lows, closes, idx, direction, sl, tp1, bars=20):
+    """Simulate trade from idx forward. Returns (outcome, pnl_pct)."""
+    entry = closes[idx]
+    for j in range(idx + 1, min(idx + bars + 1, len(closes))):
+        if direction == "BUY":
+            if lows[j] <= sl:
+                return "SL", (sl - entry) / entry * 100
+            if highs[j] >= tp1:
+                return "TP1", (tp1 - entry) / entry * 100
+        else:
+            if highs[j] >= sl:
+                return "SL", (entry - sl) / entry * 100
+            if lows[j] <= tp1:
+                return "TP1", (entry - tp1) / entry * 100
+    last = closes[min(idx + bars, len(closes) - 1)]
+    pnl = ((last - entry) / entry if direction == "BUY" else (entry - last) / entry) * 100
+    return "OPEN", pnl
+
+
+def backtest_symbol(nova_sym: str, yf_ticker: str, asset_class: str, stats: AssetStats):
+    """Run full signal pipeline on one symbol."""
+    df = fetch_ohlcv(yf_ticker, "1h", "90d")
+    if df is None or len(df) < 0:
+        print("    [no data]")
+        return
+
+    print(f"    {len(df)} bars", end="", flush=True)
+    W = 250
+    if len(df) < W + 20:
+        print(" [insufficient]")
+        return
+
+    H = df["high"].values.astype(float)
+    L = df["low"].values.astype(float)
+    C = df["close"].values.astype(float)
+    tc = 0
+
+    for start in range(0, len(df) - W - 20, 4):
+        window = df.iloc[start:start + W].copy().reset_index(drop=True)
+
+        # Run strategies
+        hits = []
+        for name, fn in ALL_STRATEGIES:
+            try:
+                sig = fn(window)
+                if sig:
+                    hits.append((name, sig))
+                    stats.strats[name] = stats.strats.get(name, 0) + 1
+            except Exception:
+                stats.nans += 1
+
+        if not hits:
+            continue
+        stats.raw += len(hits)
+
+        # Regime filter
+        regime = detect_regime(window)
+        stats.regimes[regime] = stats.regimes.get(regime, 0) + 1
+        allowed = REGIME_ALLOWED.get(regime, set())
+        filtered = [(n, s) for n, s in hits if n in allowed]
+        stats.regime_f += len(hits) - len(filtered)
+        if not filtered:
+            continue
+
+        # Chop filter
+        if is_choppy(window):
+            stats.choppy_f += len(filtered)
+            continue
+
+        # Volume filter
+        if not check_volume(window):
+            stats.volume_f += len(filtered)
+            continue
+
+        # Confluence
+        buys = [x for x in filtered if x[1] == "BUY"]
+        sells = [x for x in filtered if x[1] == "SELL"]
+        if len(buys) >= 2:
+            direction = "BUY"
+        elif len(sells) >= 2:
+            direction = "SELL"
+        else:
+            stats.no_conf += len(filtered)
+            continue
+
+        # Compute SL/TP
+        price = C[start + W - 1]
+        atr_val = calc_atr(window["high"], window["low"], window["close"]).iloc[-1]
+        atr_ok = not np.isnan(atr_val) and atr_val > 0
+
+        mult = ATR_MULT.get(asset_class, ATR_MULT["forex"])
+        fb = PCT_FALLBACK.get(asset_class, PCT_FALLBACK["forex"])
+
+        if atr_ok:
+            sl_d = atr_val * mult["sl"]
+            tp_d = atr_val * mult["tp"]
+            stats.atr_sls.append(sl_d / price * 100)
+            stats.atr_n += 1
+        else:
+            sl_d = price * fb["sl"]
+            tp_d = price * fb["tp"]
+
+        sl = price - sl_d if direction == "BUY" else price + sl_d
+        tp1 = price + tp_d if direction == "BUY" else price - tp_d
+
+        stats.emitted += 1
+
+        # Simulate trade
+        idx = start + W - 1
+        if idx + 20 < len(df):
+            outcome, pnl = simulate_trade(H, L, C, idx, direction, sl, tp1)
+            stats.pnl += pnl
+            if outcome == "TP1":
+                stats.wins += 1
+                stats.win_pnls.append(pnl)
+            elif outcome == "SL":
+                stats.losses += 1
+                stats.loss_pnls.append(pnl)
+            else:
+                stats.opens += 1
+            tc += 1
+
+    print(f" -> {tc} trades")
+
+
+def print_report(all_stats: dict[str, AssetStats]):
+    """Print the full backtest report."""
+    print(f"\n{'='*70}")
+    print("  NOVAFX BACKTEST — commit fc1986c")
+    print("  90d | 1H | Yahoo Finance API | Pure numpy/pandas")
+    print(f"{'='*70}")
+
+    hdr = f"{'Asset':<14} {'Raw':>5} {'Emit':>5} {'Win':>4} {'Loss':>4} {'WR%':>6} {'RR':>6} {'PnL%':>8} {'ATR%':>5}"
+    print(f"\n{hdr}")
+    print("-" * 70)
+
+    tr = te = tw = tl = 0
+    tp = 0.0
+
+    for ac, s in all_stats.items():
+        tot = s.wins + s.losses + s.opens
+        wr = s.wins / tot * 100 if tot else 0
+        aw = np.mean(s.win_pnls) if s.win_pnls else 0
+        al = abs(np.mean(s.loss_pnls)) if s.loss_pnls else 1
+        rr = aw / al if al > 0 else 0
+        ap = s.atr_n / s.emitted * 100 if s.emitted else 0
+        print(f"{ac:<14} {s.raw:>5} {s.emitted:>5} {s.wins:>4} {s.losses:>4} "
+              f"{wr:>5.1f}% {f'1:{rr:.1f}':>6} {s.pnl:>+7.2f}% {ap:>4.0f}%")
+        tr += s.raw; te += s.emitted; tw += s.wins; tl += s.losses; tp += s.pnl
+
+    print("-" * 70)
+    gw = tw / (tw + tl) * 100 if tw + tl else 0
+    gf = (1 - te / tr) * 100 if tr else 0
+    print(f"{'TOTAL':<14} {tr:>5} {te:>5} {tw:>4} {tl:>4} "
+          f"{gw:>5.1f}% {'—':>6} {tp:>+7.2f}% {'—':>5}")
+
+    # Filter breakdown
+    print(f"\n{'='*70}\n  FILTER BREAKDOWN\n{'='*70}")
+    print(f"{'Asset':<14} {'Regime':>7} {'Choppy':>7} {'Volume':>7} {'NoCnfl':>7} {'NaN':>5}")
+    print("-" * 70)
+    for ac, s in all_stats.items():
+        print(f"{ac:<14} {s.regime_f:>7} {s.choppy_f:>7} {s.volume_f:>7} {s.no_conf:>7} {s.nans:>5}")
+
+    # Regime distribution
+    print(f"\n{'='*70}\n  REGIME DISTRIBUTION\n{'='*70}")
+    for ac, s in all_stats.items():
+        t = sum(s.regimes.values())
+        if t:
+            p = {k: f"{v/t*100:.0f}%" for k, v in s.regimes.items()}
+            print(f"  {ac:<14} {p}")
+
+    # ATR analysis
+    print(f"\n{'='*70}\n  ATR SL DISTANCE (% of price)\n{'='*70}")
+    for ac, s in all_stats.items():
+        if s.atr_sls:
+            print(f"  {ac:<14} min={min(s.atr_sls):.3f}%  avg={np.mean(s.atr_sls):.3f}%  max={max(s.atr_sls):.3f}%")
+        else:
+            print(f"  {ac:<14} [no ATR data]")
+
+    # Strategy hits
+    print(f"\n{'='*70}\n  STRATEGY HITS\n{'='*70}")
+    for ac, s in all_stats.items():
+        print(f"  {ac}: {s.strats}")
+
+    # Flags
+    print(f"\n{'='*70}\n  FLAGS\n{'='*70}")
+    flags = []
+    if tr and gf > 95:
+        flags.append(f"[WARN] Filter rate {gf:.0f}% — may be too aggressive")
+    if tw + tl and gw < 30:
+        flags.append(f"[WARN] Win rate {gw:.0f}% — below 30%")
+    for ac, s in all_stats.items():
+        if s.nans:
+            flags.append(f"[BUG] {ac}: {s.nans} NaN exceptions")
+        if s.raw > 20 and s.emitted == 0:
+            flags.append(f"[WARN] {ac}: {s.raw} raw hits but 0 emitted — filters too tight")
+        if s.atr_sls and np.mean(s.atr_sls) > 5:
+            flags.append(f"[WARN] {ac}: ATR SL avg {np.mean(s.atr_sls):.1f}% — stops too wide")
+    if not flags:
+        flags.append("[OK] No critical issues")
+    for f in flags:
+        print(f"  {f}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN
 # ═══════════════════════════════════════════════════════════════════════
 
 
 if __name__ == "__main__":
+    import sys
     import time
 
-    test_symbols = [("EURUSD=X", "forex"), ("AAPL", "stock"), ("BTC-USD", "crypto")]
+    # Quick mode: test 3 symbols only
+    if "--quick" in sys.argv:
+        SYMBOLS = {
+            "forex": {"EURUSD": "EURUSD=X"},
+            "stocks": {"AAPL": "AAPL"},
+            "crypto": {"BTCUSDT": "BTC-USD"},
+        }
 
-    for sym, cls in test_symbols:
-        print(f"\n{'='*60}")
-        print(f"  {sym} ({cls})")
-        print(f"{'='*60}")
-        try:
-            df = fetch_ohlcv(sym, "1h", "90d")
-            print(f"  Rows: {len(df)}")
-            print(f"  Date range: {df['timestamp'].iloc[0]} → {df['timestamp'].iloc[-1]}")
+    print("=" * 70)
+    print("  NOVAFX BACKTEST HARNESS — commit fc1986c")
+    print("  90d | 1H | Yahoo Finance API | Pure numpy/pandas")
+    print("=" * 70)
 
-            # Test indicators
-            c = df["close"]
-            h = df["high"]
-            l = df["low"]
+    all_stats: dict[str, AssetStats] = {}
 
-            ema20 = calc_ema(c, 20)
-            atr14 = calc_atr(h, l, c, 14)
-            rsi14 = calc_rsi(c, 14)
-            macd_l, sig_l, hist = calc_macd(c)
-            bb_u, bb_m, bb_l, bb_bw = calc_bollinger(c)
-            adx14 = calc_adx(h, l, c, 14)
-            hurst = calc_hurst(c)
+    for ac, syms in SYMBOLS.items():
+        print(f"\n[{ac.upper()}]")
+        stats = AssetStats()
+        for sym, tick in syms.items():
+            print(f"  {sym} ({tick})", end=" ", flush=True)
+            try:
+                backtest_symbol(sym, tick, ac, stats)
+            except Exception as e:
+                print(f"    [ERROR: {e}]")
+            time.sleep(0.3)
+        all_stats[ac] = stats
 
-            print(f"\n  EMA(20) last 5:  {ema20.tail().values}")
-            print(f"  ATR(14) last 5:  {atr14.tail().values}")
-            print(f"  RSI(14) last 5:  {rsi14.tail().values}")
-            print(f"  MACD last 5:     {macd_l.tail().values}")
-            print(f"  BB upper last 5: {bb_u.tail().values}")
-            print(f"  ADX(14) last 5:  {adx14.tail().values}")
-            print(f"  Hurst:           {hurst:.4f}")
-
-            # NaN check
-            for name, series in [("EMA", ema20), ("ATR", atr14), ("RSI", rsi14),
-                                  ("MACD", macd_l), ("BB_upper", bb_u), ("ADX", adx14)]:
-                tail_nans = series.tail(100).isna().sum()
-                if tail_nans > 0:
-                    print(f"  [WARN] {name} has {tail_nans} NaN in last 100 bars")
-                else:
-                    print(f"  [OK]   {name} — no NaN in last 100 bars")
-
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-        time.sleep(0.5)
+    print_report(all_stats)
