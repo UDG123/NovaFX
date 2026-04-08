@@ -1,0 +1,35 @@
+{
+  "stats": {
+    "n_trades": 1,
+    "n_open": 0,
+    "signals_processed": 1,
+    "win_rate": 1.0,
+    "total_pnl": 558.0245,
+    "avg_expected_slippage": 0.05,
+    "avg_actual_slippage": 0.05,
+    "slippage_ratio": 1.0,
+    "avg_latency_ms": 50.0,
+    "balance": 9945.28
+  },
+  "positions": [],
+  "trades": [
+    {
+      "symbol": "BTC-USD",
+      "side": "BUY",
+      "entry_price": 60030.0,
+      "exit_price": 65967.0,
+      "quantity": 0.093990997,
+      "pnl": 558.0245,
+      "pnl_pct": 0.098901,
+      "strategy": "macd_trend",
+      "exit_reason": "take_profit",
+      "expected_slippage": 0.05,
+      "actual_slippage": 0.05,
+      "latency_ms": 50.0,
+      "open_time": "2026-04-08T06:04:52.227908+00:00",
+      "close_time": "2026-04-08T06:04:52.328349+00:00",
+      "duration_s": 0.0
+    }
+  ],
+  "updated_at": "2026-04-08T06:04:52.328599+00:00"
+}
