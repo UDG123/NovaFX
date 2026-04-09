@@ -142,14 +142,14 @@ def calc_atr(candles: list[dict], period: int = 14) -> float:
     return np.mean(trs[-period:])
 
 
-async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str, fear_greed: int):
-    """Scan a single crypto instrument."""
+async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str, fear_greed: int) -> dict:
+    """Scan a single crypto instrument. Returns result dict for logging."""
 
     # Fetch 4H candles (250 bars for EMA200, already ordered ASC)
     candles = await fetch_candles(client, symbol, "4h", 250)
     if len(candles) < 200:
         print(f"[CIPHER] {symbol}: insufficient data ({len(candles)} candles, need 200+)")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"insufficient_data_{len(candles)}_candles"}
 
     # Already in chronological order (ASC)
     closes = [float(c["close"]) for c in candles]
@@ -162,12 +162,12 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
 
     if not ema8 or not ema34 or not ema200:
         print(f"[CIPHER] {symbol}: EMA calculation failed")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "ema_calculation_failed"}
 
     macd_line, signal_line, _ = calc_macd(closes)
     if not macd_line or not signal_line:
         print(f"[CIPHER] {symbol}: MACD calculation failed")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "macd_calculation_failed"}
 
     rsi = calc_rsi(closes, 14)
     atr = calc_atr(candles, 14)
@@ -191,7 +191,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
         # F&G filter: block longs if extreme greed
         if fear_greed > 80:
             print(f"[CIPHER] {symbol}: LONG blocked by F&G={fear_greed}")
-            return
+            return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"long_blocked_fear_greed_{fear_greed}"}
         direction = "LONG"
 
     # SHORT conditions
@@ -203,7 +203,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
         # F&G filter: block shorts if extreme fear
         if fear_greed < 20:
             print(f"[CIPHER] {symbol}: SHORT blocked by F&G={fear_greed}")
-            return
+            return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"short_blocked_fear_greed_{fear_greed}"}
         direction = "SHORT"
 
     else:
@@ -213,14 +213,14 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     print(f"[CIPHER] {symbol}: EMA8={ema8_val:.4f} EMA34={ema34_val:.4f} RSI={rsi:.1f} -> {direction or 'NO_SIGNAL'}")
 
     if direction is None:
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "no_confluence_conditions_met"}
 
     # Dedup (8hr)
     hour_block = datetime.now(timezone.utc).hour // 8
     dedup_key = f"novafx:dedup:floor3:{symbol}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}:{hour_block}"
     if await r.exists(dedup_key):
         print(f"[CIPHER] {symbol}: already signaled this 8hr block")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "already_signaled_this_8hr_block"}
 
     # Get funding rate for context
     funding_rate = await fetch_funding_rate(client, symbol)
@@ -266,6 +266,15 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     await send_telegram(signal)
     print(f"[CIPHER] Signal: {symbol} {direction}")
 
+    return {
+        "symbol": symbol,
+        "signal": direction,
+        "score": int(rr * 30 + (100 - abs(rsi - 50))),
+        "entry": round(entry, 2),
+        "sl": round(sl, 2),
+        "tp": round(tp1, 2),
+    }
+
 
 async def send_telegram(signal: dict):
     """Send signal to Telegram."""
@@ -293,10 +302,35 @@ async def send_telegram(signal: dict):
         await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
 
+async def write_scan_log(r: redis.Redis, results: list[dict], signals_fired: int, scan_time: datetime):
+    """Write scan summary to Redis for status-api."""
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+
+    from datetime import timedelta
+    next_scan = scan_time + timedelta(hours=SCAN_INTERVAL_HOURS)
+
+    summary = {
+        "last_scan": scan_time.isoformat() + "Z",
+        "next_scan": next_scan.isoformat() + "Z",
+        "results": results,
+        "signals_fired": signals_fired,
+        "dxy_state": dxy_state,
+        "vix_regime": vix_regime,
+    }
+
+    await r.set("novafx:log:floor3", json.dumps(summary))
+    print(f"[CIPHER] Wrote scan log: {signals_fired} signals, {len(results)} instruments scanned")
+
+
 async def scan_loop(r: redis.Redis):
     """Main scanning loop - every 4 hours."""
     while True:
-        print(f"[CIPHER] Starting scan at {datetime.now(timezone.utc).isoformat()}")
+        scan_time = datetime.now(timezone.utc)
+        print(f"[CIPHER] Starting scan at {scan_time.isoformat()}")
+
+        results = []
+        signals_fired = 0
 
         async with httpx.AsyncClient(timeout=30) as client:
             # Fetch F&G once for all instruments
@@ -305,10 +339,18 @@ async def scan_loop(r: redis.Redis):
 
             for symbol in INSTRUMENTS:
                 try:
-                    await scan_instrument(client, r, symbol, fear_greed)
+                    result = await scan_instrument(client, r, symbol, fear_greed)
+                    if result:
+                        results.append(result)
+                        if result.get("signal") not in [None, "NO_SIGNAL"]:
+                            signals_fired += 1
                     await asyncio.sleep(2)
                 except Exception as e:
                     print(f"[CIPHER] Error scanning {symbol}: {e}")
+                    results.append({"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"error_{str(e)[:50]}"})
+
+        # Write scan summary to Redis
+        await write_scan_log(r, results, signals_fired, scan_time)
 
         print(f"[CIPHER] Scan complete. Next scan in {SCAN_INTERVAL_HOURS}h")
         await asyncio.sleep(SCAN_INTERVAL_HOURS * 3600)

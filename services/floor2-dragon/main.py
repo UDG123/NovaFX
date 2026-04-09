@@ -175,14 +175,14 @@ def is_jpy_pair(symbol: str) -> bool:
     return "JPY" in symbol
 
 
-async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str):
-    """Scan a single instrument for RSI divergence."""
+async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str) -> dict:
+    """Scan a single instrument for RSI divergence. Returns result dict for logging."""
 
     # Fetch 100 daily candles
     candles = await fetch_candles(client, symbol, "1day", 100)
     if len(candles) < 50:
         print(f"[DRAGON] {symbol}: insufficient data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_data"}
 
     candles = candles[::-1]  # Chronological order
     closes = [float(c["close"]) for c in candles]
@@ -191,7 +191,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     rsi = calc_rsi(closes, 14)
     if len(rsi) < 20:
         print(f"[DRAGON] {symbol}: insufficient RSI data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_rsi_data"}
 
     # Calculate ATR(14)
     atr = calc_atr(candles, 14)
@@ -212,7 +212,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
         # Carry filter for JPY pairs
         if is_jpy_pair(symbol) and carry_diff < 1.0:
             print(f"[DRAGON] {symbol}: bullish blocked by carry filter ({carry_diff:.2f}%)")
-            return
+            return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"bullish_blocked_carry_{carry_diff:.2f}"}
         direction = "LONG"
         div_type = "Bullish"
         rsi_pivot1 = rsi1_b
@@ -220,21 +220,21 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     elif bearish:
         if is_jpy_pair(symbol) and carry_diff > -1.0:
             print(f"[DRAGON] {symbol}: bearish blocked by carry filter ({carry_diff:.2f}%)")
-            return
+            return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"bearish_blocked_carry_{carry_diff:.2f}"}
         direction = "SHORT"
         div_type = "Bearish"
         rsi_pivot1 = rsi1_s
         rsi_pivot2 = rsi2_s
     else:
         print(f"[DRAGON] {symbol}: no divergence detected")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "no_divergence_detected"}
 
     # Dedup check (1 week)
     week_num = datetime.now(timezone.utc).strftime("%Y-W%W")
     dedup_key = f"novafx:dedup:floor2:{symbol}:{week_num}"
     if await r.exists(dedup_key):
         print(f"[DRAGON] {symbol}: already signaled this week")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "already_signaled_this_week"}
 
     # Calculate SL/TP
     current_price = closes[-1]
@@ -277,6 +277,15 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     await send_telegram(signal)
     print(f"[DRAGON] Signal: {symbol} {direction} ({div_type} divergence)")
 
+    return {
+        "symbol": symbol,
+        "signal": direction,
+        "score": int(abs(rsi_pivot2 - rsi_pivot1) + abs(carry_diff) * 10),
+        "entry": round(entry, 5),
+        "sl": round(sl, 5),
+        "tp": round(tp, 5),
+    }
+
 
 async def send_telegram(signal: dict):
     """Send signal to Telegram."""
@@ -303,18 +312,50 @@ async def send_telegram(signal: dict):
         await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
 
+async def write_scan_log(r: redis.Redis, results: list[dict], signals_fired: int, scan_time: datetime):
+    """Write scan summary to Redis for status-api."""
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+
+    next_scan = scan_time + timedelta(hours=SCAN_INTERVAL_HOURS)
+
+    summary = {
+        "last_scan": scan_time.isoformat() + "Z",
+        "next_scan": next_scan.isoformat() + "Z",
+        "results": results,
+        "signals_fired": signals_fired,
+        "dxy_state": dxy_state,
+        "vix_regime": vix_regime,
+    }
+
+    await r.set("novafx:log:floor2", json.dumps(summary))
+    print(f"[DRAGON] Wrote scan log: {signals_fired} signals, {len(results)} instruments scanned")
+
+
 async def scan_loop(r: redis.Redis):
     """Main scanning loop - every 4 hours."""
     while True:
-        print(f"[DRAGON] Starting scan at {datetime.now(timezone.utc).isoformat()}")
+        scan_time = datetime.now(timezone.utc)
+        print(f"[DRAGON] Starting scan at {scan_time.isoformat()}")
+
+        results = []
+        signals_fired = 0
 
         async with httpx.AsyncClient(timeout=30) as client:
             for symbol in INSTRUMENTS:
                 try:
-                    await scan_instrument(client, r, symbol)
+                    result = await scan_instrument(client, r, symbol)
+                    if result:
+                        results.append(result)
+                        if result.get("signal") not in [None, "NO_SIGNAL"]:
+                            signals_fired += 1
                     await asyncio.sleep(2)
                 except Exception as e:
                     print(f"[DRAGON] Error scanning {symbol}: {e}")
+                    results.append({"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"error_{str(e)[:50]}"})
+
+        # Write scan summary to Redis
+        await write_scan_log(r, results, signals_fired, scan_time)
 
         print(f"[DRAGON] Scan complete. Next scan in {SCAN_INTERVAL_HOURS}h")
         await asyncio.sleep(SCAN_INTERVAL_HOURS * 3600)

@@ -94,14 +94,14 @@ def calc_atr(candles: list[dict], period: int = 10) -> float:
     return np.mean(trs[-period:])
 
 
-async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str):
-    """Scan a single index for Triple RSI setup."""
+async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str) -> dict:
+    """Scan a single index for Triple RSI setup. Returns result dict for logging."""
 
     # Fetch 250 daily candles
     candles = await fetch_candles(client, symbol, "1day", 250)
     if len(candles) < 200:
         print(f"[APEX] {symbol}: insufficient data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_data"}
 
     candles = candles[::-1]  # Chronological
     closes = [float(c["close"]) for c in candles]
@@ -114,7 +114,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     rsi_series = calc_rsi_series(closes, 2)
     if len(rsi_series) < 3:
         print(f"[APEX] {symbol}: insufficient RSI data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_rsi_data"}
 
     rsi2 = rsi_series[-1]
     rsi_prev = rsi_series[-2]
@@ -163,13 +163,13 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
 
     if not direction:
         print(f"[APEX] {symbol}: no signal (RSI2={rsi2:.1f}, SMA200={sma200:.2f})")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"no_signal_rsi2_{rsi2:.1f}"}
 
     # Dedup: 1 per day
     dedup_key = f"novafx:dedup:floor5:{symbol}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     if await r.exists(dedup_key):
         print(f"[APEX] {symbol}: already signaled today")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "already_signaled_today"}
 
     # Get yesterday's high for exit note
     prev_high = float(candles[-2]["high"])
@@ -195,6 +195,15 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     # Telegram
     await send_telegram(signal)
     print(f"[APEX] Signal: {symbol} {direction} ({tier})")
+
+    return {
+        "symbol": symbol,
+        "signal": direction,
+        "score": 90 if tier == "TRIPLE_RSI" else (83 if tier == "CUMULATIVE_RSI" else 75),
+        "entry": round(current_close, 2),
+        "sl": round(sma200, 2),
+        "tp": round(prev_high, 2),
+    }
 
 
 async def publish_cross_floor_intel(client: httpx.AsyncClient, r: redis.Redis):
@@ -303,26 +312,59 @@ async def wait_until_target_time():
     await asyncio.sleep(wait_seconds)
 
 
+async def write_scan_log(r: redis.Redis, results: list[dict], signals_fired: int, scan_time: datetime):
+    """Write scan summary to Redis for status-api."""
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+
+    # Next scan is tomorrow at 21:00 UTC
+    next_scan = (scan_time + timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+
+    summary = {
+        "last_scan": scan_time.isoformat() + "Z",
+        "next_scan": next_scan.isoformat() + "Z",
+        "results": results,
+        "signals_fired": signals_fired,
+        "dxy_state": dxy_state,
+        "vix_regime": vix_regime,
+    }
+
+    await r.set("novafx:log:floor5", json.dumps(summary))
+    print(f"[APEX] Wrote scan log: {signals_fired} signals, {len(results)} instruments scanned")
+
+
 async def scan_loop(r: redis.Redis):
     """Main loop - scan at 21:00 UTC daily."""
     while True:
         await wait_until_target_time()
-        print(f"[APEX] Starting scan at {datetime.now(timezone.utc).isoformat()}")
+        scan_time = datetime.now(timezone.utc)
+        print(f"[APEX] Starting scan at {scan_time.isoformat()}")
+
+        results = []
+        signals_fired = 0
 
         async with httpx.AsyncClient(timeout=30) as client:
             # Scan indices
             for symbol in INSTRUMENTS:
                 try:
-                    await scan_instrument(client, r, symbol)
+                    result = await scan_instrument(client, r, symbol)
+                    if result:
+                        results.append(result)
+                        if result.get("signal") not in [None, "NO_SIGNAL"]:
+                            signals_fired += 1
                     await asyncio.sleep(2)
                 except Exception as e:
                     print(f"[APEX] Error scanning {symbol}: {e}")
+                    results.append({"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"error_{str(e)[:50]}"})
 
             # Publish cross-floor intel
             try:
-                await publish_cross_floor_intel(client, r)
+                dxy_state, vix_regime = await publish_cross_floor_intel(client, r)
             except Exception as e:
                 print(f"[APEX] Error publishing intel: {e}")
+
+        # Write scan summary to Redis
+        await write_scan_log(r, results, signals_fired, scan_time)
 
 
 async def health_handler(request):

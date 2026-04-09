@@ -143,14 +143,14 @@ async def check_spy_trend(client: httpx.AsyncClient) -> bool:
     return closes[-1] > ema20
 
 
-async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str, spy_bull: bool):
-    """Scan a single equity for VWAP reversion setup."""
+async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str, spy_bull: bool) -> dict:
+    """Scan a single equity for VWAP reversion setup. Returns result dict for logging."""
 
     # Fetch 5-min candles (full day = 390 bars)
     candles = await fetch_candles(client, symbol, "5min", 390)
     if len(candles) < 50:
         print(f"[VERTEX] {symbol}: insufficient data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_data"}
 
     candles = candles[::-1]  # Chronological
 
@@ -158,13 +158,13 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     result = calc_vwap(candles)
     if len(result) < 8:
         print(f"[VERTEX] {symbol}: VWAP calculation failed")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "vwap_calculation_failed"}
 
     vwap, upper_2sd, lower_2sd, upper_3sd, lower_3sd, upper_1sd, lower_1sd, std = result
 
     if vwap == 0:
         print(f"[VERTEX] {symbol}: zero VWAP")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "zero_vwap"}
 
     closes = [float(c["close"]) for c in candles]
     current_price = closes[-1]
@@ -201,13 +201,13 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
 
     else:
         print(f"[VERTEX] {symbol}: no setup (price={current_price:.2f}, vwap={vwap:.2f}, rsi2={rsi2:.0f})")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"no_setup_rsi2_{rsi2:.0f}_dist_{dist_pct:.1f}pct"}
 
     # Dedup: 1 per symbol per day
     dedup_key = f"novafx:dedup:floor4:{symbol}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     if await r.exists(dedup_key):
         print(f"[VERTEX] {symbol}: already signaled today")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "already_signaled_today"}
 
     rel_vol = (current_vol / avg_vol) if avg_vol > 0 else 1.0
 
@@ -233,6 +233,15 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     # Telegram
     await send_telegram(signal)
     print(f"[VERTEX] Signal: {symbol} {direction}")
+
+    return {
+        "symbol": symbol,
+        "signal": direction,
+        "score": int(abs(dist_pct) * 10 + rel_vol * 20),
+        "entry": round(entry, 2),
+        "sl": round(sl, 2),
+        "tp": round(tp1, 2),
+    }
 
 
 async def send_telegram(signal: dict):
@@ -260,6 +269,27 @@ async def send_telegram(signal: dict):
         await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
 
+async def write_scan_log(r: redis.Redis, results: list[dict], signals_fired: int, scan_time: datetime):
+    """Write scan summary to Redis for status-api."""
+    from datetime import timedelta
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+
+    next_scan = scan_time + timedelta(minutes=SCAN_INTERVAL_MINUTES)
+
+    summary = {
+        "last_scan": scan_time.isoformat() + "Z",
+        "next_scan": next_scan.isoformat() + "Z",
+        "results": results,
+        "signals_fired": signals_fired,
+        "dxy_state": dxy_state,
+        "vix_regime": vix_regime,
+    }
+
+    await r.set("novafx:log:floor4", json.dumps(summary))
+    print(f"[VERTEX] Wrote scan log: {signals_fired} signals, {len(results)} instruments scanned")
+
+
 async def scan_loop(r: redis.Redis):
     """Main scanning loop - every 5 minutes during market hours."""
     while True:
@@ -269,7 +299,11 @@ async def scan_loop(r: redis.Redis):
             await asyncio.sleep(60)
             continue
 
-        print(f"[VERTEX] Starting scan at {datetime.now(timezone.utc).isoformat()}")
+        scan_time = datetime.now(timezone.utc)
+        print(f"[VERTEX] Starting scan at {scan_time.isoformat()}")
+
+        results = []
+        signals_fired = 0
 
         async with httpx.AsyncClient(timeout=30) as client:
             # Check SPY trend
@@ -278,10 +312,18 @@ async def scan_loop(r: redis.Redis):
 
             for symbol in INSTRUMENTS:
                 try:
-                    await scan_instrument(client, r, symbol, spy_bull)
+                    result = await scan_instrument(client, r, symbol, spy_bull)
+                    if result:
+                        results.append(result)
+                        if result.get("signal") not in [None, "NO_SIGNAL"]:
+                            signals_fired += 1
                     await asyncio.sleep(2)
                 except Exception as e:
                     print(f"[VERTEX] Error scanning {symbol}: {e}")
+                    results.append({"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"error_{str(e)[:50]}"})
+
+        # Write scan summary to Redis
+        await write_scan_log(r, results, signals_fired, scan_time)
 
         print(f"[VERTEX] Scan complete. Next scan in {SCAN_INTERVAL_MINUTES}m")
         await asyncio.sleep(SCAN_INTERVAL_MINUTES * 60)

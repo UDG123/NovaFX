@@ -1,0 +1,2 @@
+redis[hiredis]==5.2.1
+aiohttp==3.10.11

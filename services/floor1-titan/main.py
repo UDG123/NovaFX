@@ -67,8 +67,8 @@ def calc_atr(candles: list[dict], period: int = 14) -> float:
     return np.mean(trs[-period:])
 
 
-async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str):
-    """Scan a single instrument for London breakout signal."""
+async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str) -> dict:
+    """Scan a single instrument for London breakout signal. Returns result dict for logging."""
     pip_size = get_pip_size(symbol)
     min_pips, max_pips = get_range_filter(symbol)
 
@@ -76,7 +76,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     candles_15m = await fetch_candles(client, symbol, "15min", 60)
     if len(candles_15m) < 28:  # Need at least 7 hours of data
         print(f"[TITAN] {symbol}: insufficient 15m data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_15m_data"}
 
     # Reverse to chronological order
     candles_15m = candles_15m[::-1]
@@ -92,7 +92,7 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
 
     if not asian_highs:
         print(f"[TITAN] {symbol}: no Asian session data")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "no_asian_session_data"}
 
     asian_high = max(asian_highs)
     asian_low = min(asian_lows)
@@ -102,13 +102,13 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     # Range filter
     if range_pips < min_pips or range_pips > max_pips:
         print(f"[TITAN] {symbol}: range {range_pips} pips outside filter ({min_pips}-{max_pips})")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"range_{range_pips}_pips_outside_filter"}
 
     # Fetch daily candles for SMA(200)
     candles_daily = await fetch_candles(client, symbol, "1day", 210)
     if len(candles_daily) < 200:
         print(f"[TITAN] {symbol}: insufficient daily data for SMA200")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "insufficient_daily_data"}
 
     candles_daily = candles_daily[::-1]
     daily_closes = [float(c["close"]) for c in candles_daily]
@@ -134,13 +134,13 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
         tp = entry - (asian_range * 1.5)
     else:
         print(f"[TITAN] {symbol}: no breakout signal (price={current_price}, high={asian_high}, low={asian_low})")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "no_breakout_conditions_met"}
 
     # Dedup check (24hr)
     dedup_key = f"novafx:dedup:floor1:{symbol}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     if await r.exists(dedup_key):
         print(f"[TITAN] {symbol}: already signaled today")
-        return
+        return {"symbol": symbol, "signal": "NO_SIGNAL", "reason": "already_signaled_today"}
 
     # Calculate ATR for context
     atr = calc_atr([{"high": c["high"], "low": c["low"], "close": c["close"]} for c in candles_daily], 14)
@@ -168,6 +168,15 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
     # Send Telegram
     await send_telegram(signal)
     print(f"[TITAN] Signal: {symbol} {direction} @ {entry}")
+
+    return {
+        "symbol": symbol,
+        "signal": direction,
+        "score": int(rr * 30 + range_pips),  # Simple score based on R:R and range
+        "entry": round(entry, 5),
+        "sl": round(sl, 5),
+        "tp": round(tp, 5),
+    }
 
 
 async def send_telegram(signal: dict):
@@ -208,19 +217,53 @@ async def wait_until_target_time():
     await asyncio.sleep(wait_seconds)
 
 
+async def write_scan_log(r: redis.Redis, results: list[dict], signals_fired: int, scan_time: datetime):
+    """Write scan summary to Redis for status-api."""
+    # Get cross-floor intel
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+
+    # Next scan is tomorrow at 07:00 UTC
+    next_scan = (scan_time + timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+
+    summary = {
+        "last_scan": scan_time.isoformat() + "Z",
+        "next_scan": next_scan.isoformat() + "Z",
+        "results": results,
+        "signals_fired": signals_fired,
+        "dxy_state": dxy_state,
+        "vix_regime": vix_regime,
+    }
+
+    await r.set("novafx:log:floor1", json.dumps(summary))
+    print(f"[TITAN] Wrote scan log: {signals_fired} signals, {len(results)} instruments scanned")
+
+
 async def scan_loop(r: redis.Redis):
     """Main scanning loop - wake at 07:00 UTC daily."""
     while True:
         await wait_until_target_time()
-        print(f"[TITAN] Starting London session scan at {datetime.now(timezone.utc).isoformat()}")
+        scan_time = datetime.now(timezone.utc)
+        print(f"[TITAN] Starting London session scan at {scan_time.isoformat()}")
+
+        results = []
+        signals_fired = 0
 
         async with httpx.AsyncClient(timeout=30) as client:
             for symbol in INSTRUMENTS:
                 try:
-                    await scan_instrument(client, r, symbol)
+                    result = await scan_instrument(client, r, symbol)
+                    if result:
+                        results.append(result)
+                        if result.get("signal") not in [None, "NO_SIGNAL"]:
+                            signals_fired += 1
                     await asyncio.sleep(2)  # Rate limit buffer
                 except Exception as e:
                     print(f"[TITAN] Error scanning {symbol}: {e}")
+                    results.append({"symbol": symbol, "signal": "NO_SIGNAL", "reason": f"error_{str(e)[:50]}"})
+
+        # Write scan summary to Redis
+        await write_scan_log(r, results, signals_fired, scan_time)
 
 
 async def health_handler(request):
