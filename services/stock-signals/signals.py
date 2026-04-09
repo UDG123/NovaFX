@@ -1,7 +1,7 @@
 """
 NovaFX Stock Signal Generation.
 
-RSI(14) + EMA(12/26) crossover with stock-appropriate parameters.
+RSI(14) strategy with stock-appropriate parameters (no EMA crossover required).
 Pure numpy — no TA-Lib dependency.
 """
 
@@ -75,7 +75,7 @@ def analyze_candles(
     data_stale: bool,
 ) -> Optional[Signal]:
     """
-    Run RSI(14) + EMA(12/26) crossover on stock candle data.
+    Run RSI(14) strategy on stock candle data (no EMA crossover required).
 
     Returns Signal if conditions met, else None.
     """
@@ -109,8 +109,8 @@ def analyze_candles(
         "data_stale": data_stale,
     }
 
-    # Buy: RSI < 40 AND ema_fast > ema_slow (lowered from 35 to improve signal flow)
-    if rsi < 40 and ema_fast > ema_slow:
+    # Buy: RSI < 40 (RSI-only, no EMA crossover required)
+    if rsi < 40:
         confidence = min(0.4 + (40 - rsi) / 50, 0.95)
         return Signal(
             source=f"{data_source}-stocks",
@@ -126,8 +126,8 @@ def analyze_candles(
             metadata=metadata,
         )
 
-    # Sell: RSI > 60 AND ema_fast < ema_slow (lowered from 65 to improve signal flow)
-    if rsi > 60 and ema_fast < ema_slow:
+    # Sell: RSI > 60 (RSI-only, no EMA crossover required)
+    if rsi > 60:
         confidence = min(0.4 + (rsi - 60) / 50, 0.95)
         return Signal(
             source=f"{data_source}-stocks",

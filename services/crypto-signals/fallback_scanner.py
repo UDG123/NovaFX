@@ -317,7 +317,7 @@ def _compute_atr(candles: list[dict], period: int = 14) -> float | None:
 
 
 def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
-    """Run RSI + EMA crossover strategy on candle data."""
+    """Run RSI-only strategy on candle data (no EMA crossover required)."""
     if len(candles) < 30:
         return None
 
@@ -333,8 +333,8 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     atr = _compute_atr(candles)
     metadata = {"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)}
 
-    # Buy signal (lowered from RSI < 35 to improve signal flow)
-    if rsi < 40 and ema_fast > ema_slow:
+    # Buy signal: RSI < 40 (RSI-only, no EMA crossover required)
+    if rsi < 40:
         confidence = min(0.4 + (40 - rsi) / 50, 1.0)
         sl = round(price - atr * 2.0, 2) if atr else None
         tp = [round(price + atr * 4.0, 2)] if atr else None
@@ -352,8 +352,8 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             metadata=metadata,
         )
 
-    # Sell signal (lowered from RSI > 65 to improve signal flow)
-    if rsi > 60 and ema_fast < ema_slow:
+    # Sell signal: RSI > 60 (RSI-only, no EMA crossover required)
+    if rsi > 60:
         confidence = min(0.4 + (rsi - 60) / 50, 1.0)
         sl = round(price + atr * 2.0, 2) if atr else None
         tp = [round(price - atr * 4.0, 2)] if atr else None
