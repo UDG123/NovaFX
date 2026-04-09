@@ -90,9 +90,12 @@ CC_SYMBOL_MAP = {
 
 
 class CCXTSource(DataSource):
-    """Multi-exchange CCXT source with internal failover."""
+    """Multi-exchange CCXT source with internal failover and proper session management."""
 
     EXCHANGES = ["binance", "kraken", "okx", "kucoin", "gateio"]
+
+    def __init__(self) -> None:
+        self._exchanges: dict = {}  # Reusable exchange instances
 
     @property
     def name(self) -> str:
@@ -102,17 +105,31 @@ class CCXTSource(DataSource):
     def asset_class(self) -> str:
         return "crypto"
 
+    async def _get_exchange(self, exchange_id: str):
+        """Get or create a reusable exchange instance."""
+        import ccxt.async_support as ccxt
+
+        if exchange_id not in self._exchanges:
+            exchange_cls = getattr(ccxt, exchange_id)
+            self._exchanges[exchange_id] = exchange_cls({"enableRateLimit": True})
+        return self._exchanges[exchange_id]
+
+    async def close(self) -> None:
+        """Close all open exchange sessions."""
+        for exchange_id, exchange in list(self._exchanges.items()):
+            try:
+                await exchange.close()
+            except Exception as exc:
+                logger.debug("Failed to close %s: %s", exchange_id, exc)
+        self._exchanges.clear()
+
     @with_retry
     async def fetch_candles(
         self, symbol: str, timeframe: str, limit: int
     ) -> list[dict]:
-        import ccxt.async_support as ccxt
-
         for exchange_id in self.EXCHANGES:
-            exchange = None
             try:
-                exchange_cls = getattr(ccxt, exchange_id)
-                exchange = exchange_cls({"enableRateLimit": True})
+                exchange = await self._get_exchange(exchange_id)
                 ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
 
                 return [
@@ -131,24 +148,24 @@ class CCXTSource(DataSource):
                 logger.debug(
                     "CCXT %s failed for %s: %s", exchange_id, symbol, exc
                 )
+                # Remove failed exchange from cache to force reconnect
+                if exchange_id in self._exchanges:
+                    try:
+                        await self._exchanges[exchange_id].close()
+                    except Exception:
+                        pass
+                    del self._exchanges[exchange_id]
                 continue
-            finally:
-                if exchange:
-                    await exchange.close()
 
         raise ConnectionError(f"All CCXT exchanges failed for {symbol}")
 
     async def health_check(self) -> bool:
-        import ccxt.async_support as ccxt
-
-        exchange = ccxt.kraken({"enableRateLimit": True})
         try:
+            exchange = await self._get_exchange("kraken")
             await exchange.fetch_ticker("BTC/USD")
             return True
         except Exception:
             return False
-        finally:
-            await exchange.close()
 
 
 class TwelveDataCryptoSource(DataSource):
@@ -528,8 +545,9 @@ async def run_scanner(manager: DataSourceManager) -> None:
 
 async def main() -> None:
     """Main loop: monitor Freqtrade health, activate scanner when needed."""
+    ccxt_source = CCXTSource()
     manager = DataSourceManager([
-        CCXTSource(),
+        ccxt_source,
         TwelveDataCryptoSource(),
         CryptoCompareSource(),
     ])
@@ -558,6 +576,8 @@ async def main() -> None:
         pass
     finally:
         await manager.stop_health_checks()
+        # Properly close CCXT exchange sessions to avoid unclosed client warnings
+        await ccxt_source.close()
         logger.info("Crypto fallback scanner stopped")
 
 

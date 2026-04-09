@@ -59,9 +59,18 @@
         "webhookstatus": null
     },
     "telegram": {
-        "enabled": false,
-        "token": "",
-        "chat_id": ""
+        "enabled": true,
+        "token": "8600340201:AAEKlkUnCIJAnZbY3touevK00byUCfdBlgw",
+        "chat_id": "-1003614474777",
+        "notification_settings": {
+            "status": "off",
+            "warning": "on",
+            "startup": "off",
+            "entry": "on",
+            "exit": "on",
+            "entry_fill": "on",
+            "exit_fill": "on"
+        }
     },
     "api_server": {
         "enabled": true,
