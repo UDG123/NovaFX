@@ -25,12 +25,13 @@ SCAN_INTERVAL_HOURS = 4
 
 
 async def fetch_candles(client: httpx.AsyncClient, symbol: str, interval: str, outputsize: int) -> list[dict]:
-    """Fetch OHLCV candles from TwelveData."""
+    """Fetch OHLCV candles from TwelveData (oldest-first for correct EMA calculation)."""
     url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
         "interval": interval,
         "outputsize": outputsize,
+        "order": "ASC",  # Oldest-first for correct EMA calculation
         "apikey": TWELVEDATA_API_KEY,
     }
     resp = await client.get(url, params=params)
@@ -38,7 +39,10 @@ async def fetch_candles(client: httpx.AsyncClient, symbol: str, interval: str, o
     if "values" not in data:
         print(f"[CIPHER] Error fetching {symbol}: {data.get('message', 'unknown')}")
         return []
-    return data["values"]
+    candles = data["values"]
+    if candles:
+        print(f"[CIPHER] {symbol}: fetched {len(candles)} candles, range {candles[0]['datetime']} to {candles[-1]['datetime']}")
+    return candles
 
 
 async def fetch_fear_greed(client: httpx.AsyncClient) -> int:
@@ -141,13 +145,13 @@ def calc_atr(candles: list[dict], period: int = 14) -> float:
 async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str, fear_greed: int):
     """Scan a single crypto instrument."""
 
-    # Fetch 4H candles
-    candles = await fetch_candles(client, symbol, "4h", 100)
-    if len(candles) < 50:
-        print(f"[CIPHER] {symbol}: insufficient data")
+    # Fetch 4H candles (250 bars for EMA200, already ordered ASC)
+    candles = await fetch_candles(client, symbol, "4h", 250)
+    if len(candles) < 200:
+        print(f"[CIPHER] {symbol}: insufficient data ({len(candles)} candles, need 200+)")
         return
 
-    candles = candles[::-1]  # Chronological
+    # Already in chronological order (ASC)
     closes = [float(c["close"]) for c in candles]
     current_price = closes[-1]
 
@@ -203,7 +207,12 @@ async def scan_instrument(client: httpx.AsyncClient, r: redis.Redis, symbol: str
         direction = "SHORT"
 
     else:
-        print(f"[CIPHER] {symbol}: no confluence (EMA8={ema8_val:.2f}, EMA34={ema34_val:.2f}, RSI={rsi:.1f})")
+        direction = None
+
+    # Always log computed values for debugging
+    print(f"[CIPHER] {symbol}: EMA8={ema8_val:.4f} EMA34={ema34_val:.4f} RSI={rsi:.1f} -> {direction or 'NO_SIGNAL'}")
+
+    if direction is None:
         return
 
     # Dedup (8hr)

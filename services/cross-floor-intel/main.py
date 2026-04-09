@@ -62,12 +62,38 @@ def calc_atr(candles: list[dict], period: int = 10) -> float:
 
 
 async def update_dxy_state(client: httpx.AsyncClient, r: redis.Redis) -> str:
-    """Update DXY state based on EMA(20) deviation."""
-    candles = await fetch_candles(client, "DXY", "1day", 30)
+    """Update DXY state based on EMA(20) deviation. Falls back to EUR/USD proxy if DXY unavailable."""
 
+    # Try DX-Y.NYB first (TwelveData's DXY symbol)
+    candles = await fetch_candles(client, "DX-Y.NYB", "1day", 30)
+    method = "DX-Y.NYB"
+
+    # If DX-Y.NYB fails, fall back to EUR/USD as inverse proxy
     if not candles or len(candles) < 20:
-        print("[INTEL] Insufficient DXY data")
-        return "NEUTRAL"
+        print("[INTEL] DX-Y.NYB unavailable, using EUR/USD as inverse proxy")
+        candles = await fetch_candles(client, "EUR/USD", "1day", 30)
+        method = "EUR/USD proxy"
+
+        if not candles or len(candles) < 20:
+            print("[INTEL] Insufficient data for DXY state")
+            return "NEUTRAL"
+
+        candles = candles[::-1]  # Chronological
+        closes = [float(c["close"]) for c in candles]
+        eurusd_close = closes[-1]
+        ema20 = calc_ema(closes, 20)
+
+        # EUR/USD is inverse to DXY: EUR/USD up = DXY down = BULLISH_GOLD
+        if eurusd_close > ema20:
+            state = "BULLISH_GOLD"
+        elif eurusd_close < ema20:
+            state = "BEARISH_GOLD"
+        else:
+            state = "NEUTRAL"
+
+        await r.set("novafx:cross:dxy_state", state, ex=1800)
+        print(f"[INTEL] {method}: EUR/USD={eurusd_close:.5f} vs EMA20={ema20:.5f} -> {state}")
+        return state
 
     candles = candles[::-1]  # Chronological
     closes = [float(c["close"]) for c in candles]
@@ -82,7 +108,7 @@ async def update_dxy_state(client: httpx.AsyncClient, r: redis.Redis) -> str:
         state = "NEUTRAL"
 
     await r.set("novafx:cross:dxy_state", state, ex=1800)
-    print(f"[INTEL] DXY: {dxy_close:.2f} vs EMA20: {ema20:.2f} -> {state}")
+    print(f"[INTEL] {method}: {dxy_close:.2f} vs EMA20: {ema20:.2f} -> {state}")
 
     return state
 
