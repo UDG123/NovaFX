@@ -109,37 +109,41 @@ def analyze_candles(
         "data_stale": data_stale,
     }
 
-    # Buy: RSI < 40 AND ema_fast > ema_slow (lowered from 35 to improve signal flow)
-    if rsi < 40 and ema_fast > ema_slow:
-        confidence = min(0.4 + (40 - rsi) / 50, 0.95)
+    # BUY: RSI < 40 (oversold) - no EMA crossover required
+    # SELL: RSI > 60 (overbought) - no EMA crossover required
+    # Also: MACD crossover as an alternative trigger (not implemented yet)
+
+    if rsi < 40:
+        signal = "BUY"
+        confidence = round(70 + (40 - rsi), 1)  # higher confidence the lower RSI goes
         return Signal(
             source=f"{data_source}-stocks",
             action=SignalAction.BUY,
             symbol=symbol,
             asset_class=AssetClass.STOCKS,
-            confidence=round(confidence, 3),
+            confidence=round(min(confidence / 100, 0.99), 3),
             price=price,
             stop_loss=round(price - sl_distance, 2),
             take_profit=[round(price + tp_distance, 2)],
             timeframe="1h",
-            strategy="RSI-EMA-Stocks",
+            strategy="RSI-Stocks",
             metadata=metadata,
         )
 
-    # Sell: RSI > 60 AND ema_fast < ema_slow (lowered from 65 to improve signal flow)
-    if rsi > 60 and ema_fast < ema_slow:
-        confidence = min(0.4 + (rsi - 60) / 50, 0.95)
+    if rsi > 60:
+        signal = "SELL"
+        confidence = round(70 + (rsi - 60), 1)  # higher confidence the higher RSI goes
         return Signal(
             source=f"{data_source}-stocks",
             action=SignalAction.SELL,
             symbol=symbol,
             asset_class=AssetClass.STOCKS,
-            confidence=round(confidence, 3),
+            confidence=round(min(confidence / 100, 0.99), 3),
             price=price,
             stop_loss=round(price + sl_distance, 2),
             take_profit=[round(price - tp_distance, 2)],
             timeframe="1h",
-            strategy="RSI-EMA-Stocks",
+            strategy="RSI-Stocks",
             metadata=metadata,
         )
 

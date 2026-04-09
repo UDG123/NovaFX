@@ -333,9 +333,13 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     atr = _compute_atr(candles)
     metadata = {"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)}
 
-    # Buy signal (lowered from RSI < 35 to improve signal flow)
-    if rsi < 40 and ema_fast > ema_slow:
-        confidence = min(0.4 + (40 - rsi) / 50, 1.0)
+    # BUY: RSI < 40 (oversold) - no EMA crossover required
+    # SELL: RSI > 60 (overbought) - no EMA crossover required
+    # Also: MACD crossover as an alternative trigger (not implemented yet)
+
+    if rsi < 40:
+        signal = "BUY"
+        confidence = round(70 + (40 - rsi), 1)  # higher confidence the lower RSI goes
         sl = round(price - atr * 2.0, 2) if atr else None
         tp = [round(price + atr * 4.0, 2)] if atr else None
         return Signal(
@@ -343,18 +347,18 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             action=SignalAction.BUY,
             symbol=symbol.replace("/", ""),
             asset_class=AssetClass.CRYPTO,
-            confidence=round(confidence, 3),
+            confidence=round(min(confidence / 100, 0.99), 3),
             price=price,
             stop_loss=sl,
             take_profit=tp,
             timeframe="1h",
-            strategy="RSI-EMA-Fallback",
+            strategy="RSI-Crypto",
             metadata=metadata,
         )
 
-    # Sell signal (lowered from RSI > 65 to improve signal flow)
-    if rsi > 60 and ema_fast < ema_slow:
-        confidence = min(0.4 + (rsi - 60) / 50, 1.0)
+    if rsi > 60:
+        signal = "SELL"
+        confidence = round(70 + (rsi - 60), 1)  # higher confidence the higher RSI goes
         sl = round(price + atr * 2.0, 2) if atr else None
         tp = [round(price - atr * 4.0, 2)] if atr else None
         return Signal(
@@ -362,12 +366,12 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             action=SignalAction.SELL,
             symbol=symbol.replace("/", ""),
             asset_class=AssetClass.CRYPTO,
-            confidence=round(confidence, 3),
+            confidence=round(min(confidence / 100, 0.99), 3),
             price=price,
             stop_loss=sl,
             take_profit=tp,
             timeframe="1h",
-            strategy="RSI-EMA-Fallback",
+            strategy="RSI-Crypto",
             metadata=metadata,
         )
 
