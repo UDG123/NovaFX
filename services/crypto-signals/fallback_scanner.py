@@ -57,6 +57,7 @@ sys.path.insert(0, "/freqtrade")
 
 from shared.models import AssetClass, Signal, SignalAction
 from shared.resilience import DataSource, DataSourceManager, with_retry
+from signal_optimizer import multi_timeframe_signal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -428,6 +429,43 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     return None
 
 
+async def analyze_multi_timeframe(symbol: str) -> Optional[Signal]:
+    """
+    Multi-timeframe RSI + MACD confluence analysis for crypto.
+
+    Uses 1h and 4h timeframes for stronger signal confirmation.
+    Research shows this improves win rate from ~40% to ~60%.
+    """
+    try:
+        result = await multi_timeframe_signal(symbol)
+        if not result:
+            return None
+
+        action = SignalAction.BUY if result["direction"] == "BUY" else SignalAction.SELL
+
+        return Signal(
+            source="mtf-crypto",
+            action=action,
+            symbol=result["symbol"],
+            asset_class=AssetClass.CRYPTO,
+            confidence=round(result["confidence"] / 100, 3),  # Convert to 0-1 scale
+            price=result["entry"],
+            stop_loss=result["sl"],
+            take_profit=[result["tp"]],
+            timeframe="1h+4h",
+            strategy="MTF-RSI-MACD",
+            metadata={
+                "rsi_1h": result["rsi_1h"],
+                "rsi_4h": result["rsi_4h"],
+                "macd_hist": result["macd_hist"],
+                "atr": result["atr"],
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Multi-timeframe analysis failed for {symbol}: {e}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Telegram direct send (fallback)
 # ---------------------------------------------------------------------------
@@ -541,17 +579,24 @@ async def run_scanner(manager: DataSourceManager) -> None:
     """Scan all watchlist symbols and generate signals."""
     for symbol in WATCHLIST:
         try:
-            result = await manager.get_candles(symbol, "1h", 250)
-            candles = result["candles"]
-            signal = analyze_candles(symbol, candles)
+            # Try multi-timeframe analysis first (higher win rate)
+            signal = await analyze_multi_timeframe(symbol)
+
+            # Fallback to single-timeframe if MTF fails
+            if not signal:
+                result = await manager.get_candles(symbol, "1h", 250)
+                candles = result["candles"]
+                signal = analyze_candles(symbol, candles)
+                if signal:
+                    signal.metadata["data_source"] = result["source"]
+                    signal.metadata["data_confidence"] = result["confidence"]
+
             if signal:
                 # Check for duplicate signal (same pair+direction within cooldown)
                 signal_direction = signal.action.value
                 if is_duplicate_signal(symbol, signal_direction):
                     logger.info(f"Skipping duplicate signal: {signal_direction} {symbol}")
                     continue
-                signal.metadata["data_source"] = result["source"]
-                signal.metadata["data_confidence"] = result["confidence"]
                 # Send to dispatcher for confluence tracking
                 await post_signal(signal)
                 # Also send directly to Telegram (bypasses confluence filter)

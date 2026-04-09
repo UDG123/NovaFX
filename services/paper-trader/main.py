@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import httpx
 import redis.asyncio as aioredis
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +38,28 @@ MAX_TRADE_HOURS = int(os.getenv("PAPER_MAX_TRADE_HOURS", "24"))
 
 # Position store key pattern: novafx:paper:position:{symbol}:{direction}
 # Stats key: novafx:paper:stats
+
+
+# ---------------------------------------------------------------------------
+# Health check HTTP server (for Railway)
+# ---------------------------------------------------------------------------
+
+
+async def health_handler(request) -> web.Response:
+    """Health check endpoint for Railway."""
+    return web.Response(text='{"status":"ok"}', content_type='application/json')
+
+
+async def start_health_server() -> None:
+    """Start minimal health check HTTP server."""
+    app = web.Application()
+    app.router.add_get('/health', health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv('PORT', 8000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health server running on :{port}")
 
 
 async def send_telegram(msg: str) -> bool:
@@ -323,6 +346,7 @@ async def main() -> None:
 
     try:
         await asyncio.gather(
+            start_health_server(),
             listen_signals(redis),
             monitor_positions_loop(redis),
             daily_summary(redis),
