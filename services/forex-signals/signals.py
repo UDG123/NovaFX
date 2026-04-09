@@ -98,6 +98,12 @@ def analyze_candles(
     if any(np.isnan(v) for v in [rsi, ema_fast, ema_slow]):
         return None
 
+    # DEBUG: Log actual indicator values for each pair
+    cross_up = ema_fast > ema_slow
+    cross_down = ema_fast < ema_slow
+    logger.info(f"DEBUG {symbol}: RSI={rsi:.2f}, EMA_fast={ema_fast:.4f}, EMA_slow={ema_slow:.4f}, cross_up={cross_up}, cross_down={cross_down}")
+    logger.info(f"DEBUG {symbol}: BUY_cond=(RSI<40:{rsi<40}, EMA_cross_up:{cross_up}) | SELL_cond=(RSI>60:{rsi>60}, EMA_cross_down:{cross_down})")
+
     # ATR-based stops with fallback
     atr = _compute_atr(candles)
     if atr and atr > 0:
