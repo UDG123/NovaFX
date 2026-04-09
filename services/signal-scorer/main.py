@@ -155,7 +155,8 @@ async def process_signals(redis_client: redis.Redis) -> None:
                         logger.info(f"Skipped {signal.get('symbol')}: final_score {final_score} < 65")
 
                 except Exception as e:
-                    logger.error(f"Error processing message {msg_id}: {e}")
+                    logger.warning(f"[SCORER] Skipping malformed message {msg_id}: {e}")
+                    continue
 
     except Exception as e:
         logger.error(f"Error in process_signals: {e}")
