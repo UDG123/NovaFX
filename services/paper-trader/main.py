@@ -55,6 +55,10 @@ POSITION_KEY_PREFIX = "novafx:paper:positions:"
 PROCESSED_SIGNALS_KEY = "novafx:paper:processed_signals"
 DAILY_TRADES_KEY = "novafx:paper:daily_trades:"
 ACCOUNT_BALANCE_KEY = "novafx:paper:account_balance"
+STREAM_LAST_ID_KEY = "novafx:paper:stream_last_id"
+
+# Redis stream for real-time signals
+PAPER_TRADES_STREAM = "novafx:trades:paper"
 
 
 class PaperTrader:
@@ -133,6 +137,52 @@ class PaperTrader:
 
             if cursor == 0:
                 break
+
+        return new_signals
+
+    def get_stream_signals(self) -> list[tuple[str, str, float]]:
+        """
+        Read new signals from Redis stream.
+
+        Returns list of (symbol, direction, price) tuples for new signals.
+        """
+        if not self.redis_client:
+            return []
+
+        new_signals = []
+
+        # Get last processed stream ID or start from now
+        last_id = self.redis_client.get(STREAM_LAST_ID_KEY) or "0"
+
+        try:
+            # Read from stream (non-blocking with count limit)
+            entries = self.redis_client.xread(
+                {PAPER_TRADES_STREAM: last_id},
+                count=50,
+                block=0  # Non-blocking
+            )
+
+            if entries:
+                for stream_name, messages in entries:
+                    for msg_id, data in messages:
+                        symbol = data.get("symbol", "")
+                        direction = data.get("direction", "")
+                        price_str = data.get("price", "0")
+
+                        try:
+                            price = float(price_str)
+                        except ValueError:
+                            price = 0.0
+
+                        if symbol and direction and price > 0:
+                            new_signals.append((symbol, direction, price))
+                            logger.info(f"Stream signal: {direction.upper()} {symbol} @ {price}")
+
+                        # Update last processed ID
+                        self.redis_client.set(STREAM_LAST_ID_KEY, msg_id)
+
+        except Exception as e:
+            logger.error(f"Error reading stream: {e}")
 
         return new_signals
 
@@ -223,25 +273,38 @@ class PaperTrader:
 
     async def process_new_signals(self) -> None:
         """Process any new signals and open positions."""
-        new_signals = self.get_new_signals()
+        # Get signals from key polling (legacy method)
+        key_signals = self.get_new_signals()
+        # Get signals from Redis stream (real-time method)
+        stream_signals = self.get_stream_signals()
 
-        for symbol, direction in new_signals:
-            # Fetch current price
+        # Process key-based signals (need to fetch price)
+        for symbol, direction in key_signals:
             current_price = await fetch_current_price(symbol)
             if current_price is None:
                 logger.warning(f"Could not fetch price for {symbol}, skipping signal")
                 continue
 
-            # Create position
             position = create_position(symbol, direction, current_price)
             self.save_position(position)
 
-            # Send Telegram notification
             message = format_entry_message(position)
             await send_telegram(message)
 
             logger.info(
                 f"Opened paper position: {direction.upper()} {symbol} @ {current_price}"
+            )
+
+        # Process stream signals (already have price from scanner)
+        for symbol, direction, price in stream_signals:
+            position = create_position(symbol, direction, price)
+            self.save_position(position)
+
+            message = format_entry_message(position)
+            await send_telegram(message)
+
+            logger.info(
+                f"Opened paper position (stream): {direction.upper()} {symbol} @ {price}"
             )
 
     async def check_open_positions(self) -> None:

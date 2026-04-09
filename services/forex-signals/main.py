@@ -215,6 +215,16 @@ async def scan_cycle(manager: DataSourceManager) -> None:
                 await post_signal(signal)
                 # Also send directly to Telegram (bypasses confluence filter)
                 await send_telegram_direct(signal)
+                # Publish to paper trading stream
+                if _redis:
+                    _redis.xadd("novafx:trades:paper", {
+                        "symbol": signal.symbol,
+                        "direction": signal_direction,
+                        "price": str(signal.price),
+                        "confidence": str(signal.confidence),
+                        "asset_class": "forex",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }, maxlen=1000)
                 signals_generated += 1
 
         except AllSourcesFailedError:
