@@ -328,9 +328,9 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
     atr = _compute_atr(candles)
     metadata = {"rsi": round(rsi, 2), "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4)}
 
-    # Buy signal
-    if rsi < 35 and ema_fast > ema_slow:
-        confidence = min(0.5 + (35 - rsi) / 50, 1.0)
+    # Buy signal (lowered from RSI < 35 to improve signal flow)
+    if rsi < 40 and ema_fast > ema_slow:
+        confidence = min(0.4 + (40 - rsi) / 50, 1.0)
         sl = round(price - atr * 2.0, 2) if atr else None
         tp = [round(price + atr * 4.0, 2)] if atr else None
         return Signal(
@@ -347,9 +347,9 @@ def analyze_candles(symbol: str, candles: list[dict]) -> Optional[Signal]:
             metadata=metadata,
         )
 
-    # Sell signal
-    if rsi > 65 and ema_fast < ema_slow:
-        confidence = min(0.5 + (rsi - 65) / 50, 1.0)
+    # Sell signal (lowered from RSI > 65 to improve signal flow)
+    if rsi > 60 and ema_fast < ema_slow:
+        confidence = min(0.4 + (rsi - 60) / 50, 1.0)
         sl = round(price + atr * 2.0, 2) if atr else None
         tp = [round(price - atr * 4.0, 2)] if atr else None
         return Signal(

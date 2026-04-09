@@ -335,3 +335,89 @@ async def check_confluence(symbol: str):
         "asset_class": asset_class.value,
         "confluence": result.model_dump(mode="json") if result else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Scan Endpoints (for n8n workflows)
+# ---------------------------------------------------------------------------
+
+
+async def _get_recent_signals(asset_class: str, count: int = 20) -> list[dict]:
+    """Helper to fetch recent signals from Redis stream."""
+    if not redis_client:
+        return []
+
+    stream_key = f"signals:{asset_class}"
+    try:
+        entries = await redis_client.xrevrange(stream_key, count=count)
+        signals = []
+        for entry_id, fields in entries:
+            try:
+                data = json.loads(fields.get("data", "{}"))
+                signals.append(data)
+            except Exception:
+                continue
+        return signals
+    except Exception:
+        return []
+
+
+@app.get("/scan/forex")
+async def scan_forex():
+    """
+    Fetch latest forex signals from Redis.
+    Used by n8n workflows to poll for new signals.
+    """
+    signals = await _get_recent_signals("forex", count=20)
+    # Filter to only recent signals (last 5 minutes)
+    cutoff = time.time() - 300
+    recent = [
+        s for s in signals
+        if datetime.fromisoformat(s.get("timestamp", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")).timestamp() > cutoff
+    ]
+    return {
+        "asset_class": "forex",
+        "signals": recent,
+        "count": len(recent),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/scan/crypto")
+async def scan_crypto():
+    """
+    Fetch latest crypto signals from Redis.
+    Used by n8n workflows to poll for new signals.
+    """
+    signals = await _get_recent_signals("crypto", count=20)
+    cutoff = time.time() - 300
+    recent = [
+        s for s in signals
+        if datetime.fromisoformat(s.get("timestamp", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")).timestamp() > cutoff
+    ]
+    return {
+        "asset_class": "crypto",
+        "signals": recent,
+        "count": len(recent),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/scan/stocks")
+async def scan_stocks():
+    """
+    Fetch latest stock signals from Redis.
+    Used by n8n workflows to poll for new signals.
+    """
+    signals = await _get_recent_signals("stocks", count=20)
+    cutoff = time.time() - 300
+    recent = [
+        s for s in signals
+        if datetime.fromisoformat(s.get("timestamp", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")).timestamp() > cutoff
+    ]
+    return {
+        "asset_class": "stocks",
+        "signals": recent,
+        "count": len(recent),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }

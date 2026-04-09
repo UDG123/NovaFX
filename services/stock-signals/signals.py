@@ -109,9 +109,9 @@ def analyze_candles(
         "data_stale": data_stale,
     }
 
-    # Buy: RSI < 35 AND ema_fast > ema_slow
-    if rsi < 35 and ema_fast > ema_slow:
-        confidence = min(0.5 + (35 - rsi) / 50, 0.95)
+    # Buy: RSI < 40 AND ema_fast > ema_slow (lowered from 35 to improve signal flow)
+    if rsi < 40 and ema_fast > ema_slow:
+        confidence = min(0.4 + (40 - rsi) / 50, 0.95)
         return Signal(
             source=f"{data_source}-stocks",
             action=SignalAction.BUY,
@@ -126,9 +126,9 @@ def analyze_candles(
             metadata=metadata,
         )
 
-    # Sell: RSI > 65 AND ema_fast < ema_slow
-    if rsi > 65 and ema_fast < ema_slow:
-        confidence = min(0.5 + (rsi - 65) / 50, 0.95)
+    # Sell: RSI > 60 AND ema_fast < ema_slow (lowered from 65 to improve signal flow)
+    if rsi > 60 and ema_fast < ema_slow:
+        confidence = min(0.4 + (rsi - 60) / 50, 0.95)
         return Signal(
             source=f"{data_source}-stocks",
             action=SignalAction.SELL,
