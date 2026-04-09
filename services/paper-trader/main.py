@@ -1,8 +1,16 @@
 """
-NovaFX Paper Trader v2 - Trades from scored ensemble signals with per-desk P&L tracking.
+NovaFX Paper Trader v3 - Trades from all 6 floor streams + universal scanner.
 
-Subscribes to novafx:signals:scored (post-ensemble scoring), monitors positions,
-and reports per-desk P&L breakdown to Telegram.
+Subscribes to all 7 signal streams:
+- novafx:signals:floor1 (TITAN - London Breakout)
+- novafx:signals:floor2 (DRAGON - RSI Divergence)
+- novafx:signals:floor3 (CIPHER - Crypto EMA/MACD)
+- novafx:signals:floor4 (VERTEX - VWAP Reversion)
+- novafx:signals:floor5 (APEX - Triple RSI)
+- novafx:signals:floor6 (BULLION - Gold Breakout)
+- novafx:signals:scored (Universal Scanner)
+
+Monitors positions and reports per-floor + per-desk P&L breakdown to Telegram.
 """
 
 import asyncio
@@ -40,6 +48,19 @@ FOREX_SYMBOLS = {"EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "USD/CHF
 CRYPTO_SYMBOLS = {"BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD", "AVAX/USD", "DOGE/USD", "LINK/USD",
                   "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "ADAUSD", "AVAXUSD", "DOGEUSD", "LINKUSD"}
 STOCK_SYMBOLS = {"AAPL", "MSFT", "NVDA", "META", "AMZN", "GOOGL", "SPY", "QQQ"}
+
+# All signal streams to monitor (6 floors + v2 universal scanner)
+SIGNAL_STREAMS = {
+    "novafx:signals:floor1": "TITAN",
+    "novafx:signals:floor2": "DRAGON",
+    "novafx:signals:floor3": "CIPHER",
+    "novafx:signals:floor4": "VERTEX",
+    "novafx:signals:floor5": "APEX",
+    "novafx:signals:floor6": "BULLION",
+    "novafx:signals:scored": "SCANNER",
+}
+
+FLOOR_NAMES = ["TITAN", "DRAGON", "CIPHER", "VERTEX", "APEX", "BULLION", "SCANNER"]
 
 
 def get_desk(symbol: str) -> str:
@@ -142,7 +163,7 @@ async def get_price(symbol: str) -> float | None:
         return None
 
 
-async def open_position(redis, symbol: str, direction: str, entry: float, sl: float, tp: float, score: float, desk: str) -> None:
+async def open_position(redis, symbol: str, direction: str, entry: float, sl: float, tp: float, score: float, desk: str, floor_name: str = "SCANNER") -> None:
     """Open a simulated paper trade using pre-calculated entry/SL/TP from signal."""
     key = f"novafx:paper:position:{symbol}:{direction}"
 
@@ -167,6 +188,7 @@ async def open_position(redis, symbol: str, direction: str, entry: float, sl: fl
         "risk": round(risk_amount, 2),
         "score": score,
         "desk": desk,
+        "floor": floor_name,
         "opened_at": time.time(),
     }
 
@@ -178,19 +200,20 @@ async def open_position(redis, symbol: str, direction: str, entry: float, sl: fl
         f"*{symbol}* {direction.upper()} @ `{entry}`\n"
         f"\U0001f6d1 SL: `{position['sl']}` | \U0001f3af TP: `{position['tp']}`\n"
         f"\U0001f4b0 Risk: ${position['risk']} ({RISK_PCT}%)\n"
-        f"\U0001f3c6 Score: {score} | Desk: {desk.upper()}"
+        f"\U0001f3c6 Score: {score} | Floor: {floor_name} | Desk: {desk.upper()}"
     )
 
-    logger.info(f"Opened paper position: {direction.upper()} {symbol} @ {entry} (score={score}, desk={desk})")
+    logger.info(f"Opened paper position: {direction.upper()} {symbol} @ {entry} (score={score}, floor={floor_name}, desk={desk})")
 
 
 async def close_position(redis, key: str, position: dict, exit_price: float, reason: str) -> None:
-    """Close a paper trade and report P&L with desk tracking."""
+    """Close a paper trade and report P&L with desk and floor tracking."""
     entry = position["entry"]
     direction = position["direction"].upper()
     size = position["size"]
     symbol = position["symbol"]
     desk = position.get("desk", get_desk(symbol))
+    floor = position.get("floor", "SCANNER")
 
     if direction in ("BUY", "LONG"):
         pnl = (exit_price - entry) * size
@@ -208,12 +231,21 @@ async def close_position(redis, key: str, position: dict, exit_price: float, rea
         "forex": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
         "crypto": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
         "stocks": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
+        "floors": {},
     }
 
     # Ensure desk keys exist (migration from v1 stats)
     for d in ["forex", "crypto", "stocks"]:
         if d not in stats:
             stats[d] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+
+    # Ensure floors dict exists
+    if "floors" not in stats:
+        stats["floors"] = {}
+
+    # Ensure floor key exists
+    if floor not in stats["floors"]:
+        stats["floors"][floor] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
 
     # Update totals
     stats["trades"] += 1
@@ -224,6 +256,11 @@ async def close_position(redis, key: str, position: dict, exit_price: float, rea
     stats[desk]["trades"] += 1
     stats[desk]["wins" if won else "losses"] += 1
     stats[desk]["pnl"] = round(stats[desk]["pnl"] + pnl, 2)
+
+    # Update floor stats
+    stats["floors"][floor]["trades"] += 1
+    stats["floors"][floor]["wins" if won else "losses"] += 1
+    stats["floors"][floor]["pnl"] = round(stats["floors"][floor]["pnl"] + pnl, 2)
 
     await redis.set(stats_key, json.dumps(stats))
     await redis.delete(key)
@@ -237,10 +274,10 @@ async def close_position(redis, key: str, position: dict, exit_price: float, rea
         f"*{symbol}* {direction} | {reason}\n"
         f"Entry: `{entry}` -> Exit: `{exit_price}`\n"
         f"P&L: *{pnl_str}* | Duration: {duration_h:.1f}h\n"
-        f"\U0001f4ca Session: {stats['trades']} trades | {win_rate}% WR | Total: ${stats['total_pnl']:+.2f}"
+        f"Floor: {floor} | \U0001f4ca Session: {stats['trades']} trades | {win_rate}% WR | Total: ${stats['total_pnl']:+.2f}"
     )
 
-    logger.info(f"Closed position: {direction} {symbol} P&L: {pnl_str} (desk={desk})")
+    logger.info(f"Closed position: {direction} {symbol} P&L: {pnl_str} (floor={floor}, desk={desk})")
 
 
 async def monitor_positions(redis) -> None:
@@ -285,19 +322,22 @@ async def monitor_positions(redis) -> None:
 
 
 async def listen_signals(redis) -> None:
-    """Listen for new signals on novafx:signals:scored stream (ensemble-scored signals only)."""
-    stream_key = "novafx:signals:scored"
-    last_id = "$"
+    """Listen for signals on all 7 streams (6 floors + v2 universal scanner)."""
+    # Track last ID for each stream
+    last_ids = {stream: "$" for stream in SIGNAL_STREAMS}
 
-    logger.info(f"Listening for scored signals on stream: {stream_key}")
+    logger.info(f"Listening for signals on {len(SIGNAL_STREAMS)} streams: {list(SIGNAL_STREAMS.keys())}")
 
     while True:
         try:
-            entries = await redis.xread({stream_key: last_id}, count=10, block=2000)
+            entries = await redis.xread(last_ids, count=10, block=2000)
             for stream, messages in (entries or []):
+                stream_key = stream.decode() if isinstance(stream, bytes) else stream
+                floor_name = SIGNAL_STREAMS.get(stream_key, "UNKNOWN")
+
                 for msg_id, data in messages:
                     msg_id_str = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
-                    last_id = msg_id_str
+                    last_ids[stream_key] = msg_id_str
 
                     # Decode data from bytes
                     def decode_field(key):
@@ -325,14 +365,19 @@ async def listen_signals(redis) -> None:
                     score_raw = data.get(b"final_score", data.get(b"score", data.get("final_score", data.get("score", b"0"))))
                     score = float(score_raw.decode() if isinstance(score_raw, bytes) else score_raw) if score_raw else 0
 
+                    # Get floor_name from message or derive from stream
+                    msg_floor = decode_field("floor_name") or decode_field("floor")
+                    if msg_floor:
+                        floor_name = msg_floor.upper()
+
                     # Get desk from signal or classify
                     desk = decode_field("desk") or get_desk(symbol)
 
                     if symbol and direction and entry > 0 and sl > 0 and tp > 0:
-                        logger.info(f"Scored signal received: {direction} {symbol} @ {entry} (score={score}, desk={desk})")
-                        await open_position(redis, symbol, direction, entry, sl, tp, score, desk)
+                        logger.info(f"[{floor_name}] Signal: {direction} {symbol} @ {entry} (score={score}, desk={desk})")
+                        await open_position(redis, symbol, direction, entry, sl, tp, score, desk, floor_name)
                     else:
-                        logger.warning(f"Invalid signal data: symbol={symbol}, direction={direction}, entry={entry}, sl={sl}, tp={tp}")
+                        logger.warning(f"[{floor_name}] Invalid signal: symbol={symbol}, direction={direction}, entry={entry}, sl={sl}, tp={tp}")
 
         except Exception as e:
             if "NOGROUP" not in str(e):
@@ -341,7 +386,7 @@ async def listen_signals(redis) -> None:
 
 
 async def daily_summary(redis) -> None:
-    """Send daily P&L summary at midnight UTC with per-desk breakdown."""
+    """Send daily P&L summary at midnight UTC with per-desk and per-floor breakdown."""
     while True:
         now = datetime.now(timezone.utc)
         # Wait until next midnight
@@ -363,25 +408,38 @@ async def daily_summary(redis) -> None:
             crypto = stats.get("crypto", {"trades": 0, "wins": 0, "pnl": 0.0})
             stocks = stats.get("stocks", {"trades": 0, "wins": 0, "pnl": 0.0})
 
-            def desk_line(name, d):
+            # Per-floor breakdown
+            floors = stats.get("floors", {})
+
+            def stat_line(name, d):
                 t = d.get("trades", 0)
                 w = d.get("wins", 0)
                 p = d.get("pnl", 0.0)
                 wr = round(w / t * 100) if t > 0 else 0
                 return f"{name}: {t} trades | {wr}% WR | ${p:+.2f}"
 
+            # Build floor lines for active floors only
+            floor_lines = []
+            for floor_name in FLOOR_NAMES:
+                if floor_name in floors and floors[floor_name].get("trades", 0) > 0:
+                    floor_lines.append(stat_line(floor_name, floors[floor_name]))
+
+            floor_section = "\n".join(floor_lines) if floor_lines else "No floor trades today"
+
             await send_telegram(
                 f"\U0001f4ca *NovaFX Paper Trading Daily Report*\n"
-                f"*v2 | Ensemble Scoring | Min Score 65*\n"
+                f"*v3 | 6-Floor Stack + Scanner*\n"
                 f"Date: {now.strftime('%b %d, %Y')}\n\n"
                 f"*TOTALS*\n"
                 f"Trades: {total_trades} | Wins: {total_wins} | Losses: {total_trades - total_wins}\n"
                 f"Win Rate: {win_rate}%\n"
                 f"Total P&L: *${total_pnl:+.2f}*\n\n"
+                f"*BY FLOOR*\n"
+                f"{floor_section}\n\n"
                 f"*BY DESK*\n"
-                f"\U0001f4b1 {desk_line('Forex', forex)}\n"
-                f"\U0001f4b0 {desk_line('Crypto', crypto)}\n"
-                f"\U0001f4c8 {desk_line('Stocks', stocks)}\n\n"
+                f"\U0001f4b1 {stat_line('Forex', forex)}\n"
+                f"\U0001f4b0 {stat_line('Crypto', crypto)}\n"
+                f"\U0001f4c8 {stat_line('Stocks', stocks)}\n\n"
                 f"Account: ${ACCOUNT_SIZE + total_pnl:,.2f} (started ${ACCOUNT_SIZE:,.0f})"
             )
             # Reset daily stats
@@ -403,15 +461,15 @@ async def main() -> None:
         return
 
     redis = await aioredis.from_url(REDIS_URL, decode_responses=False)
-    logger.info(f"Paper Trader v2 started | Account: ${ACCOUNT_SIZE:,.0f} | Risk: {RISK_PCT}%")
+    logger.info(f"Paper Trader v3 started | Account: ${ACCOUNT_SIZE:,.0f} | Risk: {RISK_PCT}% | Streams: {len(SIGNAL_STREAMS)}")
 
     await send_telegram(
         f"\U0001f916 *NovaFX Paper Trader Started*\n"
-        f"*v2 | ensemble scoring | min score 65*\n\n"
+        f"*v3 | 6-Floor Stack + Scanner*\n\n"
         f"Account: ${ACCOUNT_SIZE:,.0f}\n"
         f"Risk per trade: {RISK_PCT}% (${ACCOUNT_SIZE * RISK_PCT / 100:.0f})\n"
-        f"Source: `novafx:signals:scored`\n"
-        f"Monitoring: Forex, Crypto, Stocks (per-desk P&L)"
+        f"Streams: {len(SIGNAL_STREAMS)} (Titan/Dragon/Cipher/Vertex/Apex/Bullion/Scanner)\n"
+        f"Monitoring: Per-floor + Per-desk P&L"
     )
 
     try:
