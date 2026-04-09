@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import httpx
 import redis.asyncio as aioredis
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(
@@ -304,6 +305,23 @@ async def monitor_positions_loop(redis) -> None:
         await asyncio.sleep(300)  # Check every 5 min
 
 
+async def health_handler(request) -> web.Response:
+    """Health check endpoint for Railway."""
+    return web.Response(text='{"status":"ok"}', content_type='application/json')
+
+
+async def start_health_server() -> None:
+    """Start minimal HTTP health server for Railway health checks."""
+    app = web.Application()
+    app.router.add_get('/health', health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv('PORT', 8000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health server running on :{port}")
+
+
 async def main() -> None:
     """Entry point."""
     if not REDIS_URL:
@@ -323,6 +341,7 @@ async def main() -> None:
 
     try:
         await asyncio.gather(
+            start_health_server(),
             listen_signals(redis),
             monitor_positions_loop(redis),
             daily_summary(redis),
