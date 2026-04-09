@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from shared.models import Signal
 from shared.resilience import AllSourcesFailedError, DataSourceManager
-from signals import analyze_candles
+from signals import analyze_candles, analyze_multi_timeframe
 from sources import (
     AlphaVantageForexSource,
     FinnhubForexSource,
@@ -206,21 +206,28 @@ async def scan_cycle(manager: DataSourceManager) -> None:
 
     for symbol in WATCHLIST:
         try:
-            result = await manager.get_candles(symbol, "1h", 250)
-            candles = result["candles"]
-            source = result["source"]
-            confidence = result["confidence"]
-            stale = result["stale"]
+            # Try multi-timeframe analysis first (higher win rate)
+            signal = await analyze_multi_timeframe(symbol)
 
-            sources_used[source] = sources_used.get(source, 0) + 1
+            # Fallback to single-timeframe if MTF fails
+            if not signal:
+                result = await manager.get_candles(symbol, "1h", 250)
+                candles = result["candles"]
+                source = result["source"]
+                confidence = result["confidence"]
+                stale = result["stale"]
 
-            signal = analyze_candles(
-                symbol=symbol,
-                candles=candles,
-                data_source=source,
-                data_confidence=confidence,
-                data_stale=stale,
-            )
+                sources_used[source] = sources_used.get(source, 0) + 1
+
+                signal = analyze_candles(
+                    symbol=symbol,
+                    candles=candles,
+                    data_source=source,
+                    data_confidence=confidence,
+                    data_stale=stale,
+                )
+            else:
+                sources_used["mtf-twelvedata"] = sources_used.get("mtf-twelvedata", 0) + 1
 
             if signal:
                 # Check for duplicate signal (same pair+direction within cooldown)
