@@ -341,7 +341,7 @@ async def scan_desk(
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
 
-        await asyncio.sleep(0.5)  # Rate limit
+        await asyncio.sleep(2)  # 2s between instruments to stay within rate limits
 
 
 async def run_scanner() -> None:
@@ -353,13 +353,22 @@ async def run_scanner() -> None:
             try:
                 logger.info("Starting scan cycle...")
 
-                # Scan all desks
+                # Scan desks with 65s delays to stay within TwelveData rate limits (55/min)
+                # Each symbol makes 2 API calls (1h + 4h), so staggering prevents quota exhaustion
                 await scan_desk(http_client, redis_client, FOREX_PAIRS, "forex", STREAM_FOREX)
+                logger.info("Forex scan complete. Waiting 65s before crypto scan...")
+                await asyncio.sleep(65)
+
                 await scan_desk(http_client, redis_client, CRYPTO_PAIRS, "crypto", STREAM_CRYPTO)
+                logger.info("Crypto scan complete. Waiting 65s before stocks scan...")
+                await asyncio.sleep(65)
+
                 await scan_desk(http_client, redis_client, STOCK_SYMBOLS, "stocks", STREAM_STOCKS)
 
-                logger.info(f"Scan cycle complete. Sleeping {SCAN_INTERVAL_SECONDS}s...")
-                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+                # Remaining interval after ~130s desk stagger overhead
+                remaining_sleep = max(0, SCAN_INTERVAL_SECONDS - 130)
+                logger.info(f"Scan cycle complete. Sleeping {remaining_sleep}s...")
+                await asyncio.sleep(remaining_sleep)
 
             except Exception as e:
                 logger.error(f"Scanner error: {e}")
