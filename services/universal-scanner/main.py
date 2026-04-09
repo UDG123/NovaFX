@@ -276,16 +276,19 @@ async def analyze_symbol(
             signal = "SELL"
             score += 10  # Confluence bonus
 
-    if not signal:
-        return None
-
-    # ADX trending bonus
-    if adx > 20:
+    # ADX trending bonus (compute regardless of signal for accurate logging)
+    if signal and adx > 20:
         score += 5
         reasons.append(f"ADX trending: {adx:.1f}")
 
     # Cap score at 100
     score = min(100, int(score))
+
+    # Always log the computed values for debugging
+    print(f"[SCAN] {symbol} | RSI1h:{rsi_1h:.1f} RSI4h:{rsi_4h:.1f} MACD:{macd_hist:.6f} %B:{boll_pct_b:.3f} EMA200:{round(ema_200,4)} Price:{current_price} ADX:{adx:.1f} -> {signal or 'NO_SIGNAL'} score={score}")
+
+    if not signal:
+        return None
 
     # Only publish if score >= 65
     if score < 65:
@@ -332,16 +335,22 @@ async def scan_desk(
     """Scan all symbols in a desk."""
     logger.info(f"Scanning {desk} desk: {len(symbols)} symbols")
 
+    signals_fired = 0
+
     # Process symbols with rate limiting (TwelveData has limits)
     for symbol in symbols:
         try:
             signal = await analyze_symbol(http_client, symbol, desk)
             if signal:
                 await publish_signal(redis_client, stream, signal)
+                signals_fired += 1
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
 
         await asyncio.sleep(2)  # 2s between instruments to stay within rate limits
+
+    # Summary log
+    print(f"[{desk.upper()}] {len(symbols)} evaluated, {signals_fired} signals passed threshold")
 
 
 async def run_scanner() -> None:
