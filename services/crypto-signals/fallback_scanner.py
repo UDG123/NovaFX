@@ -15,6 +15,26 @@ from typing import Optional
 
 import httpx
 import numpy as np
+import redis as redis_client
+
+# ---------------------------------------------------------------------------
+# Redis signal deduplication
+# ---------------------------------------------------------------------------
+
+REDIS_URL = os.getenv("REDIS_URL")
+_redis = redis_client.from_url(REDIS_URL) if REDIS_URL else None
+SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour cooldown per pair+direction
+
+
+def is_duplicate_signal(symbol: str, direction: str) -> bool:
+    """Check if signal was sent recently; if not, mark it as sent."""
+    if not _redis:
+        return False
+    key = f"novafx:signal_sent:{symbol}:{direction}"
+    if _redis.exists(key):
+        return True
+    _redis.setex(key, SIGNAL_COOLDOWN_SECONDS, "1")
+    return False
 
 sys.path.insert(0, "/freqtrade")
 
@@ -491,6 +511,11 @@ async def run_scanner(manager: DataSourceManager) -> None:
             candles = result["candles"]
             signal = analyze_candles(symbol, candles)
             if signal:
+                # Check for duplicate signal (same pair+direction within cooldown)
+                signal_direction = signal.action.value
+                if is_duplicate_signal(symbol, signal_direction):
+                    logger.info(f"Skipping duplicate signal: {signal_direction} {symbol}")
+                    continue
                 signal.metadata["data_source"] = result["source"]
                 signal.metadata["data_confidence"] = result["confidence"]
                 # Send to dispatcher for confluence tracking

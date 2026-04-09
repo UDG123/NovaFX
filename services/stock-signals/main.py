@@ -13,6 +13,26 @@ import sys
 from datetime import datetime, timezone, timedelta
 
 import httpx
+import redis as redis_client
+
+# ---------------------------------------------------------------------------
+# Redis signal deduplication
+# ---------------------------------------------------------------------------
+
+REDIS_URL = os.getenv("REDIS_URL")
+_redis = redis_client.from_url(REDIS_URL) if REDIS_URL else None
+SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour cooldown per pair+direction
+
+
+def is_duplicate_signal(symbol: str, direction: str) -> bool:
+    """Check if signal was sent recently; if not, mark it as sent."""
+    if not _redis:
+        return False
+    key = f"novafx:signal_sent:{symbol}:{direction}"
+    if _redis.exists(key):
+        return True
+    _redis.setex(key, SIGNAL_COOLDOWN_SECONDS, "1")
+    return False
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -222,6 +242,11 @@ async def scan_cycle(manager: DataSourceManager) -> None:
             )
 
             if signal:
+                # Check for duplicate signal (same pair+direction within cooldown)
+                signal_direction = signal.action.value
+                if is_duplicate_signal(symbol, signal_direction):
+                    logger.info(f"Skipping duplicate signal: {signal_direction} {symbol}")
+                    continue
                 # Send to dispatcher for confluence tracking
                 await post_signal(signal)
                 # Also send directly to Telegram (bypasses confluence filter)
