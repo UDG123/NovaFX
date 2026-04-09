@@ -1,0 +1,59 @@
+============================================================
+MTF SIGNAL BACKTEST RESULTS - 90 DAYS
+Strategy: 1h RSI < 38 + 4h RSI > 42 + MACD hist > 0 = BUY
+          1h RSI > 62 + 4h RSI < 58 + MACD hist < 0 = SELL
+SL: 1.5x ATR | TP: 3.0x ATR (Risk:Reward = 1:2)
+Generated: 2026-04-09T17:16:25.370841+00:00
+============================================================
+
+--- FOREX DESK ---
+Total Trades:    97
+Win Rate:        32.0%
+Avg P&L/Trade:   +0.018%
+Best Pair:       USD/JPY (+1.58%)
+Worst Pair:      NZD/USD (-1.82%)
+
+  Symbol Performance:
+    EUR/USD      | Trades:  10 | Win:  40.0% | Avg: +0.057%
+    GBP/USD      | Trades:  15 | Win:   6.7% | Avg: -0.076%
+    USD/JPY      | Trades:  11 | Win:  63.6% | Avg: +0.143%
+    AUD/USD      | Trades:  14 | Win:  50.0% | Avg: +0.082%
+    USD/CAD      | Trades:   8 | Win:  37.5% | Avg: +0.047%
+    USD/CHF      | Trades:  14 | Win:  28.6% | Avg: -0.024%
+    NZD/USD      | Trades:  13 | Win:   0.0% | Avg: -0.140%
+    EUR/GBP      | Trades:  12 | Win:  41.7% | Avg: +0.052%
+
+--- CRYPTO DESK ---
+Total Trades:    28
+Win Rate:        46.4%
+Avg P&L/Trade:   +0.214%
+Best Pair:       ADA/USD (+9.90%)
+Worst Pair:      ETH/USD (-5.72%)
+
+  Symbol Performance:
+    BTC/USD      | Trades:   7 | Win:  42.9% | Avg: +0.365%
+    ETH/USD      | Trades:   5 | Win:  20.0% | Avg: -1.143%
+    SOL/USD      | Trades:   5 | Win:  40.0% | Avg: -0.497%
+    XRP/USD      | Trades:   6 | Win:  50.0% | Avg: +0.368%
+    ADA/USD      | Trades:   5 | Win:  80.0% | Avg: +1.979%
+
+--- STOCKS DESK ---
+Total Trades:    40
+Win Rate:        30.0%
+Avg P&L/Trade:   -0.172%
+Best Pair:       MSFT (+6.53%)
+Worst Pair:      TSLA (-11.42%)
+
+  Symbol Performance:
+    AAPL         | Trades:   4 | Win:  25.0% | Avg: -0.204%
+    TSLA         | Trades:  10 | Win:  20.0% | Avg: -1.142%
+    NVDA         | Trades:  11 | Win:  18.2% | Avg: -0.601%
+    MSFT         | Trades:   9 | Win:  44.4% | Avg: +0.726%
+    META         | Trades:   6 | Win:  50.0% | Avg: +0.362%
+
+============================================================
+OVERALL SUMMARY
+Total Trades:    165
+Overall Win %:   34.0%
+Avg P&L/Trade:   +0.020%
+============================================================
