@@ -1,8 +1,8 @@
 """
-NovaFX Paper Trader - Simulates trades from signal pipeline and reports P&L to Telegram.
+NovaFX Paper Trader v2 - Trades from scored ensemble signals with per-desk P&L tracking.
 
-Subscribes to Redis signals via novafx:signals:* stream keys, monitors positions,
-and sends results to Telegram.
+Subscribes to novafx:signals:scored (post-ensemble scoring), monitors positions,
+and reports per-desk P&L breakdown to Telegram.
 """
 
 import asyncio
@@ -32,12 +32,32 @@ TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "-1003614474777")
 TWELVEDATA_KEY = os.getenv("TWELVEDATA_API_KEY")
 ACCOUNT_SIZE = float(os.getenv("PAPER_ACCOUNT_SIZE", "10000"))
 RISK_PCT = float(os.getenv("PAPER_RISK_PCT", "1.0"))  # 1% risk per trade
-SL_PIPS = float(os.getenv("PAPER_SL_PIPS", "50"))  # 50 pips SL for forex
-TP_RATIO = float(os.getenv("PAPER_TP_RATIO", "2.0"))  # 2:1 TP:SL ratio
 MAX_TRADE_HOURS = int(os.getenv("PAPER_MAX_TRADE_HOURS", "24"))
 
-# Position store key pattern: novafx:paper:position:{symbol}:{direction}
-# Stats key: novafx:paper:stats
+# Desk classification
+FOREX_SYMBOLS = {"EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "USD/CHF", "EUR/GBP", "GBP/JPY",
+                 "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "EURGBP", "GBPJPY"}
+CRYPTO_SYMBOLS = {"BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD", "AVAX/USD", "DOGE/USD", "LINK/USD",
+                  "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "ADAUSD", "AVAXUSD", "DOGEUSD", "LINKUSD"}
+STOCK_SYMBOLS = {"AAPL", "MSFT", "NVDA", "META", "AMZN", "GOOGL", "SPY", "QQQ"}
+
+
+def get_desk(symbol: str) -> str:
+    """Classify symbol into desk: forex, crypto, or stocks."""
+    sym_upper = symbol.upper().replace("/", "")
+    if sym_upper in {s.replace("/", "") for s in FOREX_SYMBOLS}:
+        return "forex"
+    elif sym_upper in {s.replace("/", "") for s in CRYPTO_SYMBOLS}:
+        return "crypto"
+    elif sym_upper in STOCK_SYMBOLS:
+        return "stocks"
+    # Fallback heuristics
+    if any(c in sym_upper for c in ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"]):
+        if len(sym_upper) == 6:
+            return "forex"
+    if any(c in sym_upper for c in ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LINK", "AVAX"]):
+        return "crypto"
+    return "stocks"
 
 
 # ---------------------------------------------------------------------------
@@ -47,13 +67,14 @@ MAX_TRADE_HOURS = int(os.getenv("PAPER_MAX_TRADE_HOURS", "24"))
 
 async def health_handler(request) -> web.Response:
     """Health check endpoint for Railway."""
-    return web.Response(text='{"status":"ok"}', content_type='application/json')
+    return web.Response(text='{"status":"ok","version":"v2"}', content_type='application/json')
 
 
 async def start_health_server() -> None:
     """Start minimal health check HTTP server."""
     app = web.Application()
     app.router.add_get('/health', health_handler)
+    app.router.add_get('/', health_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv('PORT', 8000))
@@ -102,6 +123,9 @@ async def get_price(symbol: str) -> float | None:
     # Handle crypto symbols
     if symbol.endswith("USDT"):
         td_symbol = symbol.replace("USDT", "/USD")
+    elif symbol.endswith("USD") and "/" not in symbol:
+        # Crypto like BTCUSD -> BTC/USD
+        td_symbol = symbol[:-3] + "/USD"
 
     url = f"https://api.twelvedata.com/price?symbol={td_symbol}&apikey={TWELVEDATA_KEY}"
     try:
@@ -118,31 +142,8 @@ async def get_price(symbol: str) -> float | None:
         return None
 
 
-def calc_sl_tp(entry: float, direction: str, symbol: str) -> tuple[float, float, float]:
-    """Calculate SL and TP based on direction and instrument type."""
-    is_crypto = any(c in symbol.upper() for c in ["BTC", "ETH", "SOL", "XRP", "ADA", "AVAX", "DOGE", "LINK"])
-    is_stock = any(c in symbol.upper() for c in ["AAPL", "TSLA", "NVDA", "SPY", "QQQ", "MSFT", "AMZN", "GOOG", "META", "AMD"])
-
-    if is_crypto:
-        sl_dist = entry * 0.02  # 2% SL
-    elif is_stock:
-        sl_dist = entry * 0.015  # 1.5% SL
-    else:
-        # Forex: pips-based (assume 4-decimal pairs)
-        sl_dist = SL_PIPS * 0.0001
-
-    tp_dist = sl_dist * TP_RATIO
-    risk_amount = ACCOUNT_SIZE * (RISK_PCT / 100)
-    position_size = risk_amount / sl_dist if sl_dist > 0 else 1000
-
-    if direction.upper() in ("BUY", "LONG"):
-        return entry - sl_dist, entry + tp_dist, position_size
-    else:
-        return entry + sl_dist, entry - tp_dist, position_size
-
-
-async def open_position(redis, symbol: str, direction: str, entry: float) -> None:
-    """Open a simulated paper trade."""
+async def open_position(redis, symbol: str, direction: str, entry: float, sl: float, tp: float, score: float, desk: str) -> None:
+    """Open a simulated paper trade using pre-calculated entry/SL/TP from signal."""
     key = f"novafx:paper:position:{symbol}:{direction}"
 
     # Don't double-open same direction
@@ -151,8 +152,10 @@ async def open_position(redis, symbol: str, direction: str, entry: float) -> Non
         logger.info(f"Position already exists: {key}")
         return
 
-    sl, tp, size = calc_sl_tp(entry, direction, symbol)
+    # Calculate position size based on SL distance
+    sl_dist = abs(entry - sl)
     risk_amount = ACCOUNT_SIZE * (RISK_PCT / 100)
+    position_size = risk_amount / sl_dist if sl_dist > 0 else 1000
 
     position = {
         "symbol": symbol,
@@ -160,8 +163,10 @@ async def open_position(redis, symbol: str, direction: str, entry: float) -> Non
         "entry": entry,
         "sl": round(sl, 5),
         "tp": round(tp, 5),
-        "size": round(size, 2),
+        "size": round(position_size, 2),
         "risk": round(risk_amount, 2),
+        "score": score,
+        "desk": desk,
         "opened_at": time.time(),
     }
 
@@ -172,18 +177,20 @@ async def open_position(redis, symbol: str, direction: str, entry: float) -> Non
         f"{dir_emoji} *PAPER TRADE OPENED*\n"
         f"*{symbol}* {direction.upper()} @ `{entry}`\n"
         f"\U0001f6d1 SL: `{position['sl']}` | \U0001f3af TP: `{position['tp']}`\n"
-        f"\U0001f4b0 Risk: ${position['risk']} ({RISK_PCT}% of ${ACCOUNT_SIZE:,.0f})"
+        f"\U0001f4b0 Risk: ${position['risk']} ({RISK_PCT}%)\n"
+        f"\U0001f3c6 Score: {score} | Desk: {desk.upper()}"
     )
 
-    logger.info(f"Opened paper position: {direction.upper()} {symbol} @ {entry}")
+    logger.info(f"Opened paper position: {direction.upper()} {symbol} @ {entry} (score={score}, desk={desk})")
 
 
 async def close_position(redis, key: str, position: dict, exit_price: float, reason: str) -> None:
-    """Close a paper trade and report P&L."""
+    """Close a paper trade and report P&L with desk tracking."""
     entry = position["entry"]
     direction = position["direction"].upper()
     size = position["size"]
     symbol = position["symbol"]
+    desk = position.get("desk", get_desk(symbol))
 
     if direction in ("BUY", "LONG"):
         pnl = (exit_price - entry) * size
@@ -193,15 +200,32 @@ async def close_position(redis, key: str, position: dict, exit_price: float, rea
     duration_h = (time.time() - position["opened_at"]) / 3600
     won = pnl > 0
 
-    # Update stats
+    # Update global stats
     stats_key = "novafx:paper:stats"
     stats_raw = await redis.get(stats_key)
-    stats = json.loads(stats_raw) if stats_raw else {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+    stats = json.loads(stats_raw) if stats_raw else {
+        "trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0,
+        "forex": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
+        "crypto": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
+        "stocks": {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0},
+    }
+
+    # Ensure desk keys exist (migration from v1 stats)
+    for d in ["forex", "crypto", "stocks"]:
+        if d not in stats:
+            stats[d] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+
+    # Update totals
     stats["trades"] += 1
     stats["wins" if won else "losses"] += 1
     stats["total_pnl"] = round(stats["total_pnl"] + pnl, 2)
-    await redis.set(stats_key, json.dumps(stats))
 
+    # Update desk stats
+    stats[desk]["trades"] += 1
+    stats[desk]["wins" if won else "losses"] += 1
+    stats[desk]["pnl"] = round(stats[desk]["pnl"] + pnl, 2)
+
+    await redis.set(stats_key, json.dumps(stats))
     await redis.delete(key)
 
     result_emoji = "\u2705" if won else "\u274c"
@@ -216,7 +240,7 @@ async def close_position(redis, key: str, position: dict, exit_price: float, rea
         f"\U0001f4ca Session: {stats['trades']} trades | {win_rate}% WR | Total: ${stats['total_pnl']:+.2f}"
     )
 
-    logger.info(f"Closed position: {direction} {symbol} P&L: {pnl_str}")
+    logger.info(f"Closed position: {direction} {symbol} P&L: {pnl_str} (desk={desk})")
 
 
 async def monitor_positions(redis) -> None:
@@ -261,63 +285,108 @@ async def monitor_positions(redis) -> None:
 
 
 async def listen_signals(redis) -> None:
-    """Listen for new signals on Redis stream."""
-    # Check the novafx:signals:forex, crypto, stocks streams
-    stream_keys = ["novafx:signals:forex", "novafx:signals:crypto", "novafx:signals:stocks"]
-    last_ids = {k: "$" for k in stream_keys}
+    """Listen for new signals on novafx:signals:scored stream (ensemble-scored signals only)."""
+    stream_key = "novafx:signals:scored"
+    last_id = "$"
 
-    logger.info(f"Listening for signals on streams: {stream_keys}")
+    logger.info(f"Listening for scored signals on stream: {stream_key}")
 
     while True:
         try:
-            for stream_key in stream_keys:
-                try:
-                    entries = await redis.xread({stream_key: last_ids[stream_key]}, count=10, block=1000)
-                    for stream, messages in (entries or []):
-                        stream_name = stream.decode() if isinstance(stream, bytes) else stream
-                        for msg_id, data in messages:
-                            msg_id_str = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
-                            last_ids[stream_name] = msg_id_str
+            entries = await redis.xread({stream_key: last_id}, count=10, block=2000)
+            for stream, messages in (entries or []):
+                for msg_id, data in messages:
+                    msg_id_str = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
+                    last_id = msg_id_str
 
-                            # Decode data
-                            symbol = data.get(b"symbol", b"").decode() if isinstance(data.get(b"symbol"), bytes) else data.get("symbol", "")
-                            direction = data.get(b"direction", b"").decode() if isinstance(data.get(b"direction"), bytes) else data.get("direction", "")
-                            entry_raw = data.get(b"entry", b"0") if b"entry" in data else data.get("entry", "0")
-                            entry = float(entry_raw.decode() if isinstance(entry_raw, bytes) else entry_raw) if entry_raw else 0
+                    # Decode data from bytes
+                    def decode_field(key):
+                        val = data.get(key.encode() if isinstance(key, str) else key, b"")
+                        return val.decode() if isinstance(val, bytes) else str(val) if val else ""
 
-                            if symbol and direction and entry > 0:
-                                logger.info(f"Signal received: {direction} {symbol} @ {entry}")
-                                await open_position(redis, symbol, direction, entry)
-                except Exception as e:
-                    if "NOGROUP" not in str(e):
-                        logger.debug(f"Stream {stream_key} read: {e}")
+                    symbol = decode_field("symbol")
+                    direction = decode_field("direction")
+
+                    # Get pre-calculated entry/sl/tp from signal dict
+                    entry_raw = data.get(b"entry", data.get("entry", b"0"))
+                    entry = float(entry_raw.decode() if isinstance(entry_raw, bytes) else entry_raw) if entry_raw else 0
+
+                    sl_raw = data.get(b"sl", data.get("sl", b"0"))
+                    sl = float(sl_raw.decode() if isinstance(sl_raw, bytes) else sl_raw) if sl_raw else 0
+
+                    tp_raw = data.get(b"tp", data.get("tp", b"0"))
+                    tp = float(tp_raw.decode() if isinstance(tp_raw, bytes) else tp_raw) if tp_raw else 0
+
+                    # TP can be TP1 in some signal formats
+                    if tp == 0:
+                        tp1_raw = data.get(b"tp1", data.get("tp1", b"0"))
+                        tp = float(tp1_raw.decode() if isinstance(tp1_raw, bytes) else tp1_raw) if tp1_raw else 0
+
+                    score_raw = data.get(b"final_score", data.get(b"score", data.get("final_score", data.get("score", b"0"))))
+                    score = float(score_raw.decode() if isinstance(score_raw, bytes) else score_raw) if score_raw else 0
+
+                    # Get desk from signal or classify
+                    desk = decode_field("desk") or get_desk(symbol)
+
+                    if symbol and direction and entry > 0 and sl > 0 and tp > 0:
+                        logger.info(f"Scored signal received: {direction} {symbol} @ {entry} (score={score}, desk={desk})")
+                        await open_position(redis, symbol, direction, entry, sl, tp, score, desk)
+                    else:
+                        logger.warning(f"Invalid signal data: symbol={symbol}, direction={direction}, entry={entry}, sl={sl}, tp={tp}")
+
         except Exception as e:
-            logger.error(f"Signal listener error: {e}")
+            if "NOGROUP" not in str(e):
+                logger.error(f"Signal listener error: {e}")
             await asyncio.sleep(5)
 
 
 async def daily_summary(redis) -> None:
-    """Send daily P&L summary at midnight UTC."""
+    """Send daily P&L summary at midnight UTC with per-desk breakdown."""
     while True:
         now = datetime.now(timezone.utc)
         # Wait until next midnight
         seconds_until_midnight = (24 - now.hour) * 3600 - now.minute * 60 - now.second
+        if seconds_until_midnight <= 0:
+            seconds_until_midnight = 86400  # Full day
         await asyncio.sleep(seconds_until_midnight)
 
         stats_raw = await redis.get("novafx:paper:stats")
         if stats_raw:
             stats = json.loads(stats_raw)
-            win_rate = round(stats["wins"] / stats["trades"] * 100) if stats["trades"] > 0 else 0
+            total_trades = stats.get("trades", 0)
+            total_wins = stats.get("wins", 0)
+            total_pnl = stats.get("total_pnl", 0.0)
+            win_rate = round(total_wins / total_trades * 100) if total_trades > 0 else 0
+
+            # Per-desk breakdown
+            forex = stats.get("forex", {"trades": 0, "wins": 0, "pnl": 0.0})
+            crypto = stats.get("crypto", {"trades": 0, "wins": 0, "pnl": 0.0})
+            stocks = stats.get("stocks", {"trades": 0, "wins": 0, "pnl": 0.0})
+
+            def desk_line(name, d):
+                t = d.get("trades", 0)
+                w = d.get("wins", 0)
+                p = d.get("pnl", 0.0)
+                wr = round(w / t * 100) if t > 0 else 0
+                return f"{name}: {t} trades | {wr}% WR | ${p:+.2f}"
+
             await send_telegram(
-                f"\U0001f4ca *NovaFX Daily Paper Trading Report*\n"
-                f"Date: {now.strftime('%b %d, %Y')}\n"
-                f"Trades: {stats['trades']} | Wins: {stats['wins']} | Losses: {stats['losses']}\n"
+                f"\U0001f4ca *NovaFX Paper Trading Daily Report*\n"
+                f"*v2 | Ensemble Scoring | Min Score 65*\n"
+                f"Date: {now.strftime('%b %d, %Y')}\n\n"
+                f"*TOTALS*\n"
+                f"Trades: {total_trades} | Wins: {total_wins} | Losses: {total_trades - total_wins}\n"
                 f"Win Rate: {win_rate}%\n"
-                f"Total P&L: *${stats['total_pnl']:+.2f}*\n"
-                f"Account: ${ACCOUNT_SIZE + stats['total_pnl']:,.2f} (started ${ACCOUNT_SIZE:,.0f})"
+                f"Total P&L: *${total_pnl:+.2f}*\n\n"
+                f"*BY DESK*\n"
+                f"\U0001f4b1 {desk_line('Forex', forex)}\n"
+                f"\U0001f4b0 {desk_line('Crypto', crypto)}\n"
+                f"\U0001f4c8 {desk_line('Stocks', stocks)}\n\n"
+                f"Account: ${ACCOUNT_SIZE + total_pnl:,.2f} (started ${ACCOUNT_SIZE:,.0f})"
             )
             # Reset daily stats
             await redis.delete("novafx:paper:stats")
+            logger.info("Daily summary sent, stats reset")
 
 
 async def monitor_positions_loop(redis) -> None:
@@ -327,23 +396,6 @@ async def monitor_positions_loop(redis) -> None:
         await asyncio.sleep(300)  # Check every 5 min
 
 
-async def health_handler(request) -> web.Response:
-    """Health check endpoint for Railway."""
-    return web.Response(text='{"status":"ok"}', content_type='application/json')
-
-
-async def start_health_server() -> None:
-    """Start minimal HTTP health server for Railway health checks."""
-    app = web.Application()
-    app.router.add_get('/health', health_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv('PORT', 8000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logger.info(f"Health server running on :{port}")
-
-
 async def main() -> None:
     """Entry point."""
     if not REDIS_URL:
@@ -351,14 +403,15 @@ async def main() -> None:
         return
 
     redis = await aioredis.from_url(REDIS_URL, decode_responses=False)
-    logger.info(f"Paper Trader started | Account: ${ACCOUNT_SIZE:,.0f} | Risk: {RISK_PCT}% | SL: {SL_PIPS} pips")
+    logger.info(f"Paper Trader v2 started | Account: ${ACCOUNT_SIZE:,.0f} | Risk: {RISK_PCT}%")
 
     await send_telegram(
         f"\U0001f916 *NovaFX Paper Trader Started*\n"
+        f"*v2 | ensemble scoring | min score 65*\n\n"
         f"Account: ${ACCOUNT_SIZE:,.0f}\n"
         f"Risk per trade: {RISK_PCT}% (${ACCOUNT_SIZE * RISK_PCT / 100:.0f})\n"
-        f"TP:SL Ratio: {TP_RATIO}:1\n"
-        f"Monitoring: Forex, Crypto, Stocks"
+        f"Source: `novafx:signals:scored`\n"
+        f"Monitoring: Forex, Crypto, Stocks (per-desk P&L)"
     )
 
     try:
