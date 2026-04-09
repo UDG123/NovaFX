@@ -62,14 +62,19 @@
         "enabled": true,
         "token": "8600340201:AAEKlkUnCIJAnZbY3touevK00byUCfdBlgw",
         "chat_id": "-1003614474777",
+        "allow_custom_messages": false,
         "notification_settings": {
             "status": "off",
-            "warning": "on",
+            "warning": "silent",
             "startup": "off",
-            "entry": "on",
-            "exit": "on",
+            "entry": "silent",
+            "exit": "silent",
             "entry_fill": "on",
-            "exit_fill": "on"
+            "exit_fill": "on",
+            "entry_cancel": "off",
+            "exit_cancel": "off",
+            "protection_trigger": "off",
+            "protection_trigger_global": "off"
         }
     },
     "api_server": {
