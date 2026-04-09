@@ -7,4 +7,5 @@ COPY services/crypto-signals/fallback_scanner.py /freqtrade/
 COPY services/crypto-signals/ws_monitor.py /freqtrade/
 COPY --chmod=755 services/crypto-signals/entrypoint.sh /freqtrade/
 ENTRYPOINT []
+HEALTHCHECK NONE
 CMD ["bash", "/freqtrade/entrypoint.sh"]
