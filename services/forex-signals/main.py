@@ -25,6 +25,23 @@ _redis = redis_client.from_url(REDIS_URL) if REDIS_URL else None
 SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour cooldown per pair+direction
 
 
+async def write_signal_to_stream(symbol: str, direction: str, price: float, confidence: float) -> None:
+    """Write signal to Redis stream for paper trader to pick up."""
+    if not _redis:
+        return
+    try:
+        import time
+        _redis.xadd("novafx:signals:forex", {
+            "symbol": symbol,
+            "direction": direction,
+            "entry": str(price),
+            "confidence": str(confidence),
+            "timestamp": str(time.time()),
+        }, maxlen=100)
+    except Exception as e:
+        logging.getLogger("novafx.forex").warning(f"Failed to write to Redis stream: {e}")
+
+
 def is_duplicate_signal(symbol: str, direction: str) -> bool:
     """Check if signal was sent recently; if not, mark it as sent."""
     if not _redis:
@@ -215,6 +232,13 @@ async def scan_cycle(manager: DataSourceManager) -> None:
                 await post_signal(signal)
                 # Also send directly to Telegram (bypasses confluence filter)
                 await send_telegram_direct(signal)
+                # Write to Redis stream for paper trader
+                await write_signal_to_stream(
+                    symbol.replace("/", ""),
+                    signal_direction,
+                    signal.price,
+                    signal.confidence,
+                )
                 signals_generated += 1
 
         except AllSourcesFailedError:
