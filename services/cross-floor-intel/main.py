@@ -16,9 +16,34 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_SYSTEM_CHAT_ID = os.environ.get("TELEGRAM_SYSTEM_CHAT_ID", "-1003710749613")
 PORT = int(os.environ.get("PORT", "8007"))
 
 SCAN_INTERVAL_MINUTES = 15
+
+
+async def send_system_alert(message: str):
+    """Send alert to system Telegram channel."""
+    if not TELEGRAM_BOT_TOKEN:
+        print(f"[INTEL] System alert (no token): {message}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_SYSTEM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                print(f"[INTEL] System alert sent: {message[:50]}...")
+            else:
+                print(f"[INTEL] System alert failed: {resp.status_code}")
+    except Exception as e:
+        print(f"[INTEL] System alert error: {e}")
 
 
 async def fetch_candles(client: httpx.AsyncClient, symbol: str, interval: str, outputsize: int) -> list[dict]:
@@ -133,6 +158,8 @@ async def scan_loop(r: redis.Redis):
 
             except Exception as e:
                 print(f"[INTEL] Error: {e}")
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                await send_system_alert(f"⚠️ NovaFX Alert | cross-floor-intel error: {e} | {timestamp}")
 
         print(f"[INTEL] Next update in {SCAN_INTERVAL_MINUTES}m")
         await asyncio.sleep(SCAN_INTERVAL_MINUTES * 60)
@@ -173,6 +200,13 @@ async def main():
     r = redis.from_url(REDIS_URL, decode_responses=True)
 
     await run_health_server()
+
+    # Send startup alert with initial state
+    dxy_state = await r.get("novafx:cross:dxy_state") or "UNKNOWN"
+    vix_regime = await r.get("novafx:cross:vix_regime") or "UNKNOWN"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    await send_system_alert(f"✅ NovaFX System Online | DXY={dxy_state} | VIX={vix_regime} | {timestamp}")
+
     await scan_loop(r)
 
 

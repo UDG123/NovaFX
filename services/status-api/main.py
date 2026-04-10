@@ -4,11 +4,15 @@ Reads scan logs from Redis and returns them as JSON.
 """
 import os
 import json
+from datetime import datetime, timezone
 from aiohttp import web
 import redis.asyncio as redis
+import httpx
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 PORT = int(os.environ.get("PORT", "8080"))
+TELEGRAM_SYSTEM_CHAT_ID = "-1003710749613"
+TELEGRAM_SYSTEM_BOT_TOKEN = "8600340201:AAEKlkUnCIJAnZbY3touevK00byUCfdBlgw"
 
 # Floor name mapping
 FLOOR_NAMES = {
@@ -88,8 +92,59 @@ async def handle_floor(request):
 
 
 async def handle_health(request):
-    """Health check endpoint."""
-    return web.json_response({"ok": True})
+    """Health check endpoint with floor status."""
+    r = redis.from_url(REDIS_URL, decode_responses=True)
+
+    try:
+        floors = {}
+        for i in range(1, 7):
+            key = f"novafx:log:floor{i}"
+            val = await r.get(key)
+            floors[f"floor{i}"] = "ok" if val else "no_data"
+
+        return web.json_response({
+            "status": "healthy",
+            "service": "novafx-status-api",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "floors": floors,
+        })
+
+    finally:
+        await r.aclose()
+
+
+async def handle_alert(request):
+    """Send test alert to system Telegram channel."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    message = f"🔔 NovaFX Alert Test | Pipeline OK | {timestamp}"
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_SYSTEM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_SYSTEM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                return web.json_response({
+                    "status": "sent",
+                    "message": message,
+                    "chat_id": TELEGRAM_SYSTEM_CHAT_ID,
+                })
+            else:
+                return web.json_response({
+                    "status": "error",
+                    "code": resp.status_code,
+                    "response": resp.text,
+                }, status=500)
+    except Exception as e:
+        return web.json_response({
+            "status": "error",
+            "error": str(e),
+        }, status=500)
 
 
 def create_app():
@@ -98,6 +153,7 @@ def create_app():
     app.router.add_get("/status", handle_status)
     app.router.add_get("/status/{floor}", handle_floor)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/alert", handle_alert)
     return app
 
 
