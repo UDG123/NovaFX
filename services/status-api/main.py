@@ -11,8 +11,8 @@ import httpx
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 PORT = int(os.environ.get("PORT", "8080"))
-TELEGRAM_SYSTEM_CHAT_ID = "-1003710749613"
-TELEGRAM_SYSTEM_BOT_TOKEN = "8600340201:AAEKlkUnCIJAnZbY3touevK00byUCfdBlgw"
+TELEGRAM_SYSTEM_CHAT_ID = os.environ.get("TELEGRAM_SYSTEM_CHAT_ID", "-1003710749613")
+TELEGRAM_SYSTEM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # Floor name mapping
 FLOOR_NAMES = {
